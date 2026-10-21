@@ -8,6 +8,23 @@ from memory_module.config import settings
 from memory_module.db.models import BackgroundJob, LifecycleState, Memory, MemoryRelation, MemoryScope
 
 
+def schedule_episode_embedding(session: Session, episode_id: uuid.UUID, summary_hash: str) -> None:
+    if not settings.semantic_configured():
+        return
+    key = f"embed-episode:{episode_id}:{summary_hash}"
+    exists = session.scalar(select(BackgroundJob.id).where(BackgroundJob.idempotency_key == key))
+    if exists:
+        return
+    session.add(
+        BackgroundJob(
+            job_type="embed_episode",
+            payload={"episodeId": str(episode_id), "summaryHash": summary_hash},
+            status="pending",
+            idempotency_key=key,
+        )
+    )
+
+
 def _schedule_embedding_job(session: Session, memory_id: uuid.UUID, content_hash: str) -> None:
     if not settings.semantic_configured():
         return

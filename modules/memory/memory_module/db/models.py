@@ -123,6 +123,7 @@ class Episode(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     search_vector: Mapped[str | None] = mapped_column(TSVECTOR)
+    summary_hash: Mapped[str | None] = mapped_column(String(64))
 
 
 class Memory(Base):

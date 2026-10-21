@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from memory_module.config import settings
 from memory_module.db.models import Conversation, Message, Participant
 from memory_module.embeddings.runtime import try_get_embedding_runtime
+from memory_module.services.episode_search import hybrid_episode_rows
 from memory_module.services.memory_search import hybrid_memory_rows
 from memory_module.services.participants import resolve_participant
 
@@ -39,6 +40,7 @@ def retrieve_context(
     semantic_available = runtime is not None
     blocks: list[dict] = []
     vector_ranking_used = False
+    episode_vector_used = False
     used_tokens = 0
     truncated = False
 
@@ -126,36 +128,9 @@ def retrieve_context(
 
     if len(blocks) < max_items:
         ep_limit = max_items - len(blocks)
-        ep_rows = session.execute(
-            text(
-                """
-                SELECT id, summary, started_at, created_at, importance
-                FROM episodes
-                WHERE persona_id = :persona_id
-                  AND lifecycle_state = 'active'
-                  AND search_vector @@ plainto_tsquery('english', :query)
-                ORDER BY ts_rank(search_vector, plainto_tsquery('english', :query)) DESC,
-                         importance DESC,
-                         coalesce(started_at, created_at) DESC
-                LIMIT :lim
-                """
-            ),
-            {"persona_id": persona_id, "query": query, "lim": ep_limit},
-        ).mappings().all()
-        if not ep_rows:
-            ep_rows = session.execute(
-                text(
-                    """
-                    SELECT id, summary, started_at, created_at, importance
-                    FROM episodes
-                    WHERE persona_id = :persona_id
-                      AND lifecycle_state = 'active'
-                    ORDER BY importance DESC, coalesce(started_at, created_at) DESC
-                    LIMIT :lim
-                    """
-                ),
-                {"persona_id": persona_id, "lim": ep_limit},
-            ).mappings().all()
+        ep_rows, episode_vector_used = hybrid_episode_rows(session, persona_id, query, ep_limit)
+        if episode_vector_used:
+            vector_ranking_used = True
         for row in ep_rows:
             summary = row["summary"] or ""
             est = max(1, len(summary) // 4)
@@ -185,5 +160,10 @@ def retrieve_context(
         "tokenBudget": token_budget,
         "truncated": truncated,
         "semanticAvailable": semantic_available,
-        "ranking": {"fts": True, "vector": vector_ranking_used, "structured": True},
+        "ranking": {
+            "fts": True,
+            "vector": vector_ranking_used,
+            "episodeVector": episode_vector_used,
+            "structured": True,
+        },
     }

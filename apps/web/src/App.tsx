@@ -196,8 +196,10 @@ export function App() {
 
         <ChatPanel
           llmModuleAvailable={llmAvailable}
+          memoryModuleAvailable={memoryAvailable}
           llmAdapter={snapshot?.llm.adapter}
           activeModel={persona?.activeModel ?? null}
+          activeCharacterId={activeCharacterId}
           characterName={snapshot?.character.activeCharacterName ?? persona?.name ?? "Character"}
         />
 

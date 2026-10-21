@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @echo/memory-contract build
+      - run: pnpm --filter @echo/controller typecheck
+      - run: pnpm --filter @echo/controller test
+
+  memory-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: echo
+          POSTGRES_PASSWORD: echo
+          POSTGRES_DB: echo_memory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ECHO_MEMORY_DATABASE_URL: postgresql+psycopg://echo:echo@localhost:5432/echo_memory
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install memory module
+        run: pip install -e "./modules/memory[dev]"
+      - name: Apply migrations
+        working-directory: modules/memory
+        run: alembic upgrade head
+      - name: Pytest (PostgreSQL)
+        working-directory: modules/memory
+        run: pytest -q

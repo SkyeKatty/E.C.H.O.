@@ -22,6 +22,8 @@ export type CognitiveEngineConfig = {
   promptHistoryMessages?: number;
   memoryRetrievalTokenBudget?: number;
   memoryRetrievalMaxItems?: number;
+  /** Max messages loaded from Postgres when hydrating an empty in-memory session. */
+  sessionHydrationLimit?: number;
 };
 
 export class CognitiveEngine {
@@ -69,6 +71,28 @@ export class CognitiveEngine {
       summary: `Active LLM provider set to ${profile?.label ?? id} (${profile?.model ?? "?"})`,
     });
     return this.llm.listProviders();
+  }
+
+  async getPersistedHistory(sessionId: string): Promise<{
+    messages: {
+      id: string;
+      role: string;
+      content: string | null;
+      speakerDisplayName?: string | null;
+    }[];
+  }> {
+    if (!this.memory?.isAvailable()) return { messages: [] };
+    const character = this.characters.getActive();
+    if (!character) return { messages: [] };
+    const limit = this.config.sessionHydrationLimit ?? 80;
+    const listed = await this.memory.listConversation({
+      personaId: character.id,
+      sessionId,
+      limit,
+    });
+    return {
+      messages: listed.messages.filter((m) => m.role === "user" || m.role === "assistant"),
+    };
   }
 
   cancelTask(taskId: string): boolean {
@@ -152,7 +176,7 @@ export class CognitiveEngine {
         const listed = await this.memory!.listConversation({
           personaId: character.id,
           sessionId: session.id,
-          limit: 80,
+          limit: this.config.sessionHydrationLimit ?? 80,
         });
         if (listed.messages.length) {
           this.sessions.replaceHistory(

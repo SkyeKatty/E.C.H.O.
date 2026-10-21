@@ -18,7 +18,26 @@ const chatBodySchema = z.object({
     .optional(),
 });
 
+const historyQuerySchema = z.object({
+  sessionId: z.string().uuid(),
+});
+
 export async function registerChatRoutes(app: FastifyInstance, engine: CognitiveEngine): Promise<void> {
+  app.get("/api/v1/chat/history", async (req, reply) => {
+    const parsed = historyQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid query", details: parsed.error.flatten() });
+    }
+    try {
+      const history = await engine.getPersistedHistory(parsed.data.sessionId);
+      return history;
+    } catch (err) {
+      return reply.status(502).send({
+        error: err instanceof Error ? err.message : "Failed to load history",
+      });
+    }
+  });
+
   app.get("/api/v1/providers", async (_req, reply) => {
     if (!engine.isChatAvailable()) {
       return reply.status(503).send({ error: "LLM module is not connected", active: null, providers: [] });

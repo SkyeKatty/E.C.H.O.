@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadDashboardParticipant, saveDashboardDisplayName } from "../lib/participant";
+import { ensureChatSessionId, saveChatSessionId } from "../lib/chatSession";
 
 type ChatMessage = {
   id: string;
@@ -10,8 +11,10 @@ type ChatMessage = {
 
 export function ChatPanel(props: {
   llmModuleAvailable: boolean;
+  memoryModuleAvailable?: boolean;
   llmAdapter?: "module" | "embedded";
   activeModel: string | null;
+  activeCharacterId: string | null;
   characterName: string;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -29,6 +32,49 @@ export function ChatPanel(props: {
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
+
+  useEffect(() => {
+    const characterId = props.activeCharacterId;
+    if (!characterId) return;
+
+    const sid = ensureChatSessionId(characterId);
+    setSessionId(sid);
+
+    if (!props.memoryModuleAvailable) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/v1/chat/history?sessionId=${encodeURIComponent(sid)}`,
+        );
+        if (!res.ok || cancelled) return;
+        const body = (await res.json()) as {
+          messages?: {
+            id: string;
+            role: string;
+            content: string | null;
+            speakerDisplayName?: string | null;
+          }[];
+        };
+        if (cancelled || !body.messages?.length) return;
+        setMessages(
+          body.messages.map((m) => ({
+            id: m.id,
+            role: m.role as "user" | "assistant",
+            content: m.content ?? "",
+            speakerName: m.role === "user" ? m.speakerDisplayName ?? undefined : undefined,
+          })),
+        );
+      } catch {
+        /* history optional when memory module is offline */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [props.activeCharacterId, props.memoryModuleAvailable]);
 
   const cancelTask = useCallback(async () => {
     const taskId = activeTaskIdRef.current;
@@ -115,6 +161,9 @@ export function ChatPanel(props: {
 
             if (event === "started" && typeof payload.sessionId === "string") {
               setSessionId(payload.sessionId);
+              if (props.activeCharacterId) {
+                saveChatSessionId(props.activeCharacterId, payload.sessionId);
+              }
             }
             if (event === "delta" && typeof payload.delta === "string") {
               setMessages((msgs) =>
@@ -124,7 +173,12 @@ export function ChatPanel(props: {
               );
             }
             if (event === "done") {
-              if (typeof payload.sessionId === "string") setSessionId(payload.sessionId);
+              if (typeof payload.sessionId === "string") {
+                setSessionId(payload.sessionId);
+                if (props.activeCharacterId) {
+                  saveChatSessionId(props.activeCharacterId, payload.sessionId);
+                }
+              }
               const usage = payload.usage as { totalTokens?: number } | undefined;
               if (usage?.totalTokens != null) setLastUsage(usage.totalTokens);
             }

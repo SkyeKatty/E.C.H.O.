@@ -18,7 +18,7 @@ alembic upgrade head
 python -m memory_module
 ```
 
-The module runs a background **embedding worker** (same process) that processes `embed_memory` jobs when memories promote to `active`. Use pgvector image (`docker compose up -d postgres`) and migration **005** for cosine search.
+The module runs a background **embedding worker** (same process) that processes `embed_memory` and `embed_episode` jobs. Use the pgvector Postgres image (`docker compose up -d postgres`) and migrations through **006** for cosine search on memories and episodes.
 
 **PyTorch / transformers:** the `[embeddings]` extra pins `transformers<4.48` so torch **2.3.x** works. If you already installed newer transformers globally, reinstall:
 

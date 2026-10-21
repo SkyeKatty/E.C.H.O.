@@ -22,7 +22,7 @@ Return ONLY valid JSON (no markdown):
 {"candidates":[{
   "content":"full fact sentence in past or present tense",
   "summary":"short label",
-  "kind":"semantic"|"episodic",
+  "kind":"semantic"|"episodic"|"procedural",
   "scope":"participant"|"social"|"general",
   "importance":0.0-1.0,
   "confidence":0.0-1.0,
@@ -32,7 +32,7 @@ Return ONLY valid JSON (no markdown):
   "evolvesPrior":true if this replaces or updates an earlier feeling/opinion about the same person
 }]}
 
-Include: stable preferences, relationships, multi-user events, timelines, and evolving attitudes toward people.
+Include: stable preferences, relationships, multi-user events, timelines, evolving attitudes toward people, and repeatable workflows (use kind procedural for how the persona should handle recurring situations).
 Extract how the persona feels about someone when stated or clearly implied; mark evolvesPrior when sentiment changed.
 Skip: pure greetings, empty small talk, one-off jokes, meta instructions to the AI.
 If nothing qualifies, return {"candidates":[]}.`;
@@ -40,7 +40,7 @@ If nothing qualifies, return {"candidates":[]}.`;
 type ExtractCandidate = {
   content?: string;
   summary?: string;
-  kind?: "semantic" | "episodic";
+  kind?: "semantic" | "episodic" | "procedural";
   scope?: "participant" | "social" | "general";
   importance?: number;
   confidence?: number;
@@ -146,7 +146,12 @@ export class MemoryCurator {
 
         const response = await this.memory.propose({
           personaId: input.personaId,
-          kind: raw.kind === "episodic" ? "episodic" : "semantic",
+          kind:
+            raw.kind === "episodic"
+              ? "episodic"
+              : raw.kind === "procedural"
+                ? "procedural"
+                : "semantic",
           scope,
           content,
           summary: raw.summary?.slice(0, 500) ?? content.slice(0, 120),

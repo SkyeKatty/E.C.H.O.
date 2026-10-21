@@ -169,7 +169,13 @@ export async function buildServer(config: AppConfig) {
     requestTimeoutMs: memoryCfg.extractTimeoutMs,
   });
 
-  const episodeCfg = memoryCfg.episodeCompaction;
+  const episodeCfg = memoryCfg.episodeCompaction ?? {
+    enabled: true,
+    hotWindowMessages: 24,
+    minMessagesPerEpisode: 16,
+    maxMessagesPerEpisode: 80,
+    timeoutMs: 60_000,
+  };
   const episodeCompactor = new EpisodeCompactor(llmBackend, memoryService, eventLog, {
     enabled: episodeCfg.enabled,
     hotWindowMessages: episodeCfg.hotWindowMessages,
@@ -199,6 +205,7 @@ export async function buildServer(config: AppConfig) {
       promptHistoryMessages: episodeCfg.hotWindowMessages,
       memoryRetrievalTokenBudget: memoryCfg.retrieval?.tokenBudget,
       memoryRetrievalMaxItems: memoryCfg.retrieval?.maxItems,
+      sessionHydrationLimit: Math.max(episodeCfg.hotWindowMessages * 2, 80),
     },
     memoryService,
     memoryCurator,

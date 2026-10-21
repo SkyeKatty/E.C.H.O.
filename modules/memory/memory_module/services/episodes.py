@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import datetime
 
@@ -5,7 +6,12 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from memory_module.db.models import Conversation, Episode, LifecycleState, Message
+from memory_module.services.consolidation import schedule_episode_embedding
 from memory_module.services.persona import ensure_persona
+
+
+def _summary_hash(summary: str) -> str:
+    return hashlib.sha256(summary.encode("utf-8")).hexdigest()
 
 
 def compaction_state(session: Session, persona_id: uuid.UUID, session_id: uuid.UUID) -> dict:
@@ -55,10 +61,12 @@ def record_episode(session: Session, persona_id: uuid.UUID, body: dict) -> dict:
     started_at = _parse_dt(body.get("startedAt"))
     ended_at = _parse_dt(body.get("endedAt"))
 
+    summary = body["summary"]
+    sh = _summary_hash(summary)
     ep = Episode(
         persona_id=persona_id,
         conversation_id=conv.id if conv else None,
-        summary=body["summary"],
+        summary=summary,
         importance=body.get("importance", 0.5),
         lifecycle_state=LifecycleState.active,
         started_at=started_at,
@@ -70,9 +78,17 @@ def record_episode(session: Session, persona_id: uuid.UUID, body: dict) -> dict:
     session.add(ep)
     session.flush()
     session.execute(
-        text("UPDATE episodes SET search_vector = to_tsvector('english', coalesce(summary, '')) WHERE id = :id"),
-        {"id": ep.id},
+        text(
+            """
+            UPDATE episodes
+            SET search_vector = to_tsvector('english', coalesce(summary, '')),
+                summary_hash = :sh
+            WHERE id = :id
+            """
+        ),
+        {"id": ep.id, "sh": sh},
     )
+    schedule_episode_embedding(session, ep.id, sh)
 
     if conv and to_seq is not None and int(to_seq) > int(conv.compacted_through_sequence or 0):
         conv.compacted_through_sequence = int(to_seq)

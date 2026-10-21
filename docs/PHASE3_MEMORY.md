@@ -55,12 +55,22 @@ Messages store `participant_id`. Memories store **subject_participant_id** (prim
 | `social` | Several people | “Alex and Jordan argued about…”, group events |
 | `general` | No specific person | World state, persona plans, ambient context |
 
+### Memory kind
+
+| Kind | Meaning | Examples |
+|------|---------|----------|
+| `semantic` | Stable fact or belief | Preferences, relationships, world state |
+| `episodic` | Something that happened | Events, meetings, stories |
+| `procedural` | Repeatable workflow for the persona | “When user asks for a recap…”, standing habits |
+
+The **MemoryCurator** may propose all three kinds after chat turns. Procedural memories usually use `general` or `participant` scope. They follow the same candidate → consolidation → promote path as semantic memories.
+
 - **`occurred_at`**: when something happened (retrieval surfaces this alongside text).
 - **`memory_involvements`**: extra participants on `social` memories.
 - **`participants.last_interaction_at`**: updated on each user message; retrieval injects **recent people talked to**.
 - **Evolving opinions**: extractor marks `evolvesPrior`; curator links `supersedesMemoryId` so the old active memory becomes `superseded` when the new one promotes.
 
-Run migrations through **`005`** after pull: `alembic upgrade head`.
+Run migrations through **`006`** after pull: `alembic upgrade head` (006 adds episode vectors for hybrid episode retrieval).
 
 ### Episodes vs sessions (Discord / Twitch)
 
@@ -113,6 +123,13 @@ Install embedding deps: `pip install -e ".[embeddings]"` in `modules/memory`, or
 2. The in-process **embedding worker** encodes text, stores `vector_json` + pgvector `embedding` when dimension matches.
 3. `memory.context.retrieve` runs **FTS** and **cosine** (pgvector) candidate lists, merged with **reciprocal rank fusion**.
 4. `memory.health.get` reports `semanticAvailable` when the model is loaded, plus `pendingEmbedJobs`.
+5. **Episodes** use the same embedding worker (`embed_episode` jobs) and **hybrid FTS + vector** ranking in `memory.context.retrieve` when pgvector is available.
+
+### Durable chat (controller + dashboard)
+
+- Each turn is appended to PostgreSQL via `memory.conversation.append`.
+- The controller **hydrates** an empty in-memory session from `memory.conversation.list` before the first turn after restart.
+- The dashboard stores **`echo.chatSession.{characterId}`** in localStorage and calls **`GET /api/v1/chat/history?sessionId=…`** on load to repaint the transcript.
 
 ## Recovery
 
@@ -138,12 +155,16 @@ Repo-root **`config.yaml`** is the shared local config. The **controller** reads
 
 For a second module instance (migration), run with `ECHO_MEMORY_MODULE_ID=memory-target` and a different `databaseUrl` in env; keep `memory.primaryModuleId` on the controller pointed at the module you want chat to use.
 
+## CI
+
+Pull requests and pushes to `main` run `.github/workflows/ci.yml`: Node (memory-contract build, controller typecheck + vitest) and Python memory tests against PostgreSQL/pgvector with `ECHO_MEMORY_DATABASE_URL` set in the workflow.
+
 ## Deployment
 
 ```bash
 docker compose up -d postgres
 cd modules/memory && pip install -e ".[dev]" && alembic upgrade head
 pnpm dev          # controller
-pnpm dev:memory   # memory module
+pnpm dev:memory   # memory module (or pnpm dev:memory:embed)
 pnpm dev:llm && pnpm dev:web
 ```
