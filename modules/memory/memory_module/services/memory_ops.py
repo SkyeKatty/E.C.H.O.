@@ -5,10 +5,20 @@ from datetime import datetime, timezone
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from memory_module.db.models import AuditEvent, Embedding, LifecycleState, Memory, MemoryKind, MemoryProvenance, MemoryRelation
+from memory_module.db.models import (
+    AuditEvent,
+    LifecycleState,
+    Memory,
+    MemoryInvolvement,
+    MemoryKind,
+    MemoryProvenance,
+    MemoryRelation,
+    MemoryScope,
+)
 from memory_module.services.consolidation import maybe_auto_promote
 from memory_module.services.participants import resolve_participant
 from memory_module.services.persona import ensure_persona
+from memory_module.services.scope import infer_scope, parse_occurred_at, resolve_involved
 
 
 def _content_hash(content: str) -> str:
@@ -19,10 +29,18 @@ def search_memories(session: Session, persona_id: uuid.UUID, params: dict) -> di
     q = select(Memory).where(Memory.persona_id == persona_id)
     if params.get("kind"):
         q = q.where(Memory.kind == MemoryKind(params["kind"]))
+    if params.get("scope"):
+        q = q.where(Memory.scope == MemoryScope(params["scope"]))
     if params.get("lifecycleState"):
         q = q.where(Memory.lifecycle_state == LifecycleState(params["lifecycleState"]))
     else:
         q = q.where(Memory.lifecycle_state != LifecycleState.deleted)
+    if params.get("subjectKey"):
+        subject = resolve_participant(session, persona_id, {"key": params["subjectKey"]})
+        if subject:
+            q = q.where(Memory.subject_participant_id == subject.id)
+        else:
+            return {"items": [], "total": 0}
     if params.get("query"):
         result = session.execute(
             text(
@@ -72,6 +90,8 @@ def search_memories(session: Session, persona_id: uuid.UUID, params: dict) -> di
                 "importance": m.importance,
                 "version": m.version,
                 "updatedAt": m.updated_at.isoformat(),
+                "occurredAt": m.occurred_at.isoformat() if m.occurred_at else None,
+                "scope": m.scope.value,
                 "subject": subject_labels.get(m.subject_participant_id) if m.subject_participant_id else None,
             }
             for m in memories
@@ -96,6 +116,8 @@ def get_memory(session: Session, persona_id: uuid.UUID, memory_id: uuid.UUID) ->
             "importance": mem.importance,
             "version": mem.version,
             "contentHash": mem.content_hash,
+            "scope": mem.scope.value,
+            "occurredAt": mem.occurred_at.isoformat() if mem.occurred_at else None,
         },
         "provenance": [
             {
@@ -114,18 +136,23 @@ def propose_memory(session: Session, persona_id: uuid.UUID, body: dict) -> dict:
     content = body["content"]
     h = _content_hash(content)
     subject = resolve_participant(session, persona_id, body.get("subject"))
+    involved = resolve_involved(session, persona_id, body)
+    scope = infer_scope(body, subject, involved)
     subject_id = subject.id if subject else None
+
     dup = session.scalar(
         select(Memory).where(
             Memory.persona_id == persona_id,
             Memory.content_hash == h,
             Memory.subject_participant_id == subject_id,
+            Memory.scope == scope,
             Memory.lifecycle_state != LifecycleState.deleted,
         )
     )
     if dup:
         return {"memoryId": str(dup.id), "duplicate": True, "lifecycleState": dup.lifecycle_state.value}
 
+    occurred_at = parse_occurred_at(body)
     mem = Memory(
         persona_id=persona_id,
         kind=MemoryKind(body.get("kind", "semantic")),
@@ -136,6 +163,8 @@ def propose_memory(session: Session, persona_id: uuid.UUID, body: dict) -> dict:
         importance=body.get("importance", 0.5),
         content_hash=h,
         subject_participant_id=subject_id,
+        scope=scope,
+        occurred_at=occurred_at,
     )
     session.add(mem)
     session.flush()
@@ -154,12 +183,25 @@ def propose_memory(session: Session, persona_id: uuid.UUID, body: dict) -> dict:
             excerpt=src.get("excerpt"),
         )
     )
+    for pid in {p.id for p in involved if p.id != subject_id}:
+        session.add(MemoryInvolvement(memory_id=mem.id, participant_id=pid))
+    if subject_id and scope == MemoryScope.social:
+        session.add(MemoryInvolvement(memory_id=mem.id, participant_id=subject_id))
+
     if body.get("contradictionOfMemoryId"):
         session.add(
             MemoryRelation(
                 from_memory_id=mem.id,
                 to_memory_id=uuid.UUID(body["contradictionOfMemoryId"]),
                 relation_type="contradicts",
+            )
+        )
+    if body.get("supersedesMemoryId"):
+        session.add(
+            MemoryRelation(
+                from_memory_id=mem.id,
+                to_memory_id=uuid.UUID(body["supersedesMemoryId"]),
+                relation_type="supersedes",
             )
         )
     session.add(

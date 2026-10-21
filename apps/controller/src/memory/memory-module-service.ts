@@ -1,10 +1,13 @@
 import {
   MEMORY_CAPABILITIES,
   type ContextRetrieveResult,
+  type ConversationCompactionState,
   type ParticipantRef,
   conversationAppendSchema,
   conversationListSchema,
+  conversationCompactionStateSchema,
   contextRetrieveSchema,
+  episodeRecordSchema,
   memoryDeleteSchema,
   memoryGetSchema,
   memoryProposeSchema,
@@ -63,12 +66,46 @@ export class MemoryModuleService {
     personaId: string;
     sessionId: string;
     limit?: number;
+    beforeSequence?: number;
+    fromSequence?: number;
+    toSequence?: number;
   }): Promise<{
-    messages: { id: string; role: string; content: string | null; sequence: number; createdAt: string }[];
+    messages: {
+      id: string;
+      role: string;
+      content: string | null;
+      sequence: number;
+      createdAt: string;
+      speakerDisplayName?: string | null;
+      speakerKey?: string | null;
+    }[];
     hasMore: boolean;
   }> {
     const body = conversationListSchema.parse(params);
     return this.invoke(MEMORY_CONVERSATION_LIST, body);
+  }
+
+  async getCompactionState(params: {
+    personaId: string;
+    sessionId: string;
+  }): Promise<ConversationCompactionState> {
+    const body = conversationCompactionStateSchema.parse(params);
+    return this.invoke(MEMORY_CAPABILITIES.CONVERSATION_COMPACTION_STATE, body);
+  }
+
+  async recordEpisode(params: {
+    personaId: string;
+    sessionId: string;
+    summary: string;
+    importance?: number;
+    fromSequence?: number;
+    toSequence?: number;
+    startedAt?: string;
+    endedAt?: string;
+    idempotencyKey?: string;
+  }): Promise<{ episodeId: string; duplicate?: boolean }> {
+    const body = episodeRecordSchema.parse(params);
+    return this.invoke(MEMORY_CAPABILITIES.EPISODE_RECORD, body);
   }
 
   async retrieveContext(params: {

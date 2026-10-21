@@ -43,6 +43,13 @@ memory:
   extractMinConfidence: 0.65
   extractMinUserMessageLength: 12
   extractTimeoutMs: 45000
+  # Rolling episode summaries (independent of "session end" — important for Discord/Twitch)
+  episodeCompaction:
+    enabled: true
+    hotWindowMessages: 24      # verbatim tail in LLM prompt (~12 turns)
+    minMessagesPerEpisode: 16  # backlog before compacting
+    maxMessagesPerEpisode: 80
+    timeoutMs: 60000
 
 logging:
   level: info

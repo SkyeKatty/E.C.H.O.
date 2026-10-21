@@ -105,6 +105,16 @@ const configSchema = z.object({
       extractMinConfidence: z.number().min(0).max(1).default(0.65),
       extractMinUserMessageLength: z.number().int().min(0).default(12),
       extractTimeoutMs: z.number().int().positive().default(45_000),
+      /** Rolling episode summaries when message backlog exceeds the hot window (not tied to session end). */
+      episodeCompaction: z
+        .object({
+          enabled: z.boolean().default(true),
+          hotWindowMessages: z.number().int().min(4).max(200).default(24),
+          minMessagesPerEpisode: z.number().int().min(4).max(200).default(16),
+          maxMessagesPerEpisode: z.number().int().min(8).max(500).default(80),
+          timeoutMs: z.number().int().positive().default(60_000),
+        })
+        .default({}),
     })
     .default({}),
 });

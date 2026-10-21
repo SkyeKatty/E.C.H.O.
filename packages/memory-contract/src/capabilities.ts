@@ -3,6 +3,7 @@ export const MEMORY_CAPABILITIES = {
   HEALTH_GET: "memory.health.get",
   CONVERSATION_APPEND: "memory.conversation.append",
   CONVERSATION_LIST: "memory.conversation.list",
+  CONVERSATION_COMPACTION_STATE: "memory.conversation.compaction-state",
   CONTEXT_RETRIEVE: "memory.context.retrieve",
   EPISODE_RECORD: "memory.episode.record",
   SEARCH: "memory.search",

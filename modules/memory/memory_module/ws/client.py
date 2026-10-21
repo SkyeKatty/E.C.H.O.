@@ -44,7 +44,9 @@ class MemoryModuleClient:
                 await asyncio.sleep(min(30, 2))
 
     async def _register(self, ws: ClientConnection) -> None:
-        payload = {**self.registration, "authToken": self.auth_token}
+        payload = {**self.registration}
+        if self.auth_token:
+            payload["authToken"] = self.auth_token
         await ws.send(
             json.dumps(
                 {

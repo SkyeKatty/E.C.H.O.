@@ -11,12 +11,15 @@ import { SessionStore } from "./session-store.js";
 import { buildToolRouting } from "./tools.js";
 import type { MemoryModuleService } from "../memory/memory-module-service.js";
 import type { MemoryCurator } from "../memory/memory-curator.js";
+import type { EpisodeCompactor } from "../memory/episode-compactor.js";
 import type { ParticipantRef } from "../memory/participant.js";
 
 export type CognitiveEngineConfig = {
   maxToolIterations: number;
   requestTimeoutMs: number;
   moduleRequestTimeoutMs: number;
+  /** Recent messages passed verbatim to the LLM when memory module is active. */
+  promptHistoryMessages?: number;
 };
 
 export class CognitiveEngine {
@@ -35,6 +38,7 @@ export class CognitiveEngine {
     private readonly config: CognitiveEngineConfig,
     private readonly memory: MemoryModuleService | null = null,
     private readonly memoryCurator: MemoryCurator | null = null,
+    private readonly episodeCompactor: EpisodeCompactor | null = null,
   ) {}
 
   isChatAvailable(): boolean {
@@ -205,7 +209,7 @@ export class CognitiveEngine {
         ? `[${input.speaker.displayName}] ${input.message}`
         : input.message,
       memoryInjection,
-      historyLimit: memoryAvailable ? 12 : undefined,
+      historyLimit: memoryAvailable ? this.config.promptHistoryMessages ?? 24 : undefined,
     });
 
     this.eventLog.append({
@@ -265,6 +269,12 @@ export class CognitiveEngine {
           speaker: input.speaker,
           userMessage: input.message,
           assistantReply: reply,
+        });
+
+        this.episodeCompactor?.afterTurn({
+          personaId: character.id,
+          sessionId: session.id,
+          turnId: taskId,
         });
       }
       const usageNote =

@@ -20,6 +20,7 @@ import { CharacterCardStore } from "./characters/store.js";
 import { registerCharacterRoutes } from "./routes/characters.js";
 import { MemoryModuleService } from "./memory/memory-module-service.js";
 import { MemoryCurator } from "./memory/memory-curator.js";
+import { EpisodeCompactor } from "./memory/episode-compactor.js";
 import { registerMemoryRoutes } from "./routes/memory.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -155,6 +156,15 @@ export async function buildServer(config: AppConfig) {
     requestTimeoutMs: memoryCfg.extractTimeoutMs,
   });
 
+  const episodeCfg = memoryCfg.episodeCompaction;
+  const episodeCompactor = new EpisodeCompactor(llmBackend, memoryService, eventLog, {
+    enabled: episodeCfg.enabled,
+    hotWindowMessages: episodeCfg.hotWindowMessages,
+    minMessagesPerEpisode: episodeCfg.minMessagesPerEpisode,
+    maxMessagesPerEpisode: episodeCfg.maxMessagesPerEpisode,
+    requestTimeoutMs: episodeCfg.timeoutMs,
+  });
+
   const setPersonaState = (patch: Partial<typeof persona>) => {
     Object.assign(persona, patch);
     publishSnapshot();
@@ -173,9 +183,11 @@ export async function buildServer(config: AppConfig) {
       maxToolIterations: config.cognition.maxToolIterations,
       requestTimeoutMs: config.cognition.requestTimeoutMs,
       moduleRequestTimeoutMs: config.cognition.moduleRequestTimeoutMs,
+      promptHistoryMessages: episodeCfg.hotWindowMessages,
     },
     memoryService,
     memoryCurator,
+    episodeCompactor,
   );
 
   await registerLlmRoutes(app, llmBackend);

@@ -23,7 +23,8 @@ No blocking incompatibility with the WebSocket protocol: memory uses the same `r
 | `memory.conversation.append` | Durable message append (idempotent keys) |
 | `memory.conversation.list` | Paginated history for a session |
 | `memory.context.retrieve` | Hybrid retrieval + token budget + truncation report |
-| `memory.episode.record` | Episodic summary linked to conversation |
+| `memory.episode.record` | Record a rolling episode summary (sequence range + compaction cursor) |
+| `memory.conversation.compaction-state` | `maxSequence` / `compactedThroughSequence` for backlog planning |
 | `memory.search` | Operator search (FTS + filters) |
 | `memory.get` | Single memory with provenance |
 | `memory.propose` | **Candidate** memory (not canonical until promoted) |
@@ -42,7 +43,51 @@ Every user message should carry a **speaker** `{ key, displayName, kind }`:
 - **Dashboard**: “Speaking as” name + stable `dashboard:{uuid}` in localStorage (shown in chat UI).
 - **Discord / Twitch** (future): `discord:{guildId}:{userId}` or `twitch:{channel}:{login}` with live display names.
 
-Messages store `participant_id`. Memories store **subject_participant_id** (who the fact is about). Retrieval prefers memories for the current speaker. **Auto-promotion** to `active` requires a subject when `ECHO_MEMORY_REQUIRE_SUBJECT=true` (default), so unnamed turns do not become shared canon and are not left in ambiguous limbo—they stay `candidate` until tied to a speaker or pruned.
+Messages store `participant_id`. Memories store **subject_participant_id** (primary person when relevant). Retrieval prefers memories for the current speaker plus `general` and relevant `social` events. **Auto-promotion** to `active` requires a subject for **`participant`** scope when `ECHO_MEMORY_REQUIRE_SUBJECT=true` (default); `general` and `social` memories can promote without a single subject.
+
+### Memory scope (who it is about)
+
+| Scope | Meaning | Examples |
+|--------|---------|----------|
+| `participant` | One person | Preferences, biography, **how the persona feels about them** (can evolve) |
+| `social` | Several people | “Alex and Jordan argued about…”, group events |
+| `general` | No specific person | World state, persona plans, ambient context |
+
+- **`occurred_at`**: when something happened (retrieval surfaces this alongside text).
+- **`memory_involvements`**: extra participants on `social` memories.
+- **`participants.last_interaction_at`**: updated on each user message; retrieval injects **recent people talked to**.
+- **Evolving opinions**: extractor marks `evolvesPrior`; curator links `supersedesMemoryId` so the old active memory becomes `superseded` when the new one promotes.
+
+Run migrations through **`004`** after pull: `alembic upgrade head`.
+
+### Episodes vs sessions (Discord / Twitch)
+
+These are **not** the same thing:
+
+| Concept | What it is | Lifetime |
+|---------|------------|----------|
+| **Session** | Durable conversation key `(personaId, sessionId)` — usually one **channel** or dashboard tab | Discord: effectively forever; Twitch: per channel or per broadcast (your integration chooses) |
+| **Hot window** | Last N messages passed verbatim into the LLM prompt | Fixed by `memory.episodeCompaction.hotWindowMessages` (default 24) |
+| **Episode** | A **compacted narrative chunk** of older messages (sequence `from`→`to`, timestamps, summary text) | Many per session; created **while chat is ongoing** |
+
+**Problem:** Waiting for “session end” to summarize loses everything that fell out of the hot window hours ago.
+
+**Policy:** After each persisted turn, **EpisodeCompactor** checks backlog:
+
+```
+backlog = maxSequence - compactedThroughSequence
+if backlog > hotWindow + minMessagesPerEpisode:
+    summarize messages (compacted+1 … maxSequence-hotWindow)
+    store episode + advance compactedThroughSequence
+```
+
+Raw messages remain in PostgreSQL; episodes plus atomic **memories** (curator) plus retrieval repopulate the prompt. Tune batch sizes for Twitch cadence vs Discord slow burn.
+
+**Session id guidance for integrations:**
+
+- **Discord:** stable id per channel (e.g. UUID v5 from `discord:{guildId}:{channelId}`) — one infinite log, rolling episodes.
+- **Twitch:** either one id per channel (always-on chat) or per broadcast id if you want stream-scoped logs; compaction still runs on message count, not stream length.
+- **Dashboard:** ephemeral tab UUID is fine.
 
 ## Environment
 

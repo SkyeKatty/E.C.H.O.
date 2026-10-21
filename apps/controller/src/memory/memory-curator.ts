@@ -13,21 +13,45 @@ export type MemoryCuratorConfig = {
 const EXTRACTOR_SYSTEM = `You maintain long-term memory for a persona assistant.
 Given one conversation turn, extract zero or more durable facts worth remembering later.
 
-Return ONLY valid JSON (no markdown):
-{"candidates":[{"content":"full fact sentence","summary":"short label","kind":"semantic"|"episodic","importance":0.0-1.0,"confidence":0.0-1.0}]}
+Memory scopes:
+- participant: about one person (preferences, biography, how the persona feels about them — these can change over time)
+- social: events involving multiple people (who was present, what happened together)
+- general: persona/world facts with no specific person (plans, moods about life, environment, schedule)
 
-Include ONLY stable information: preferences, relationships, biographical details, long-term goals, recurring context.
-Skip: greetings, small talk, jokes, roleplay, instructions to the AI, transient moods, secrets the user did not clearly state as lasting.
+Return ONLY valid JSON (no markdown):
+{"candidates":[{
+  "content":"full fact sentence in past or present tense",
+  "summary":"short label",
+  "kind":"semantic"|"episodic",
+  "scope":"participant"|"social"|"general",
+  "importance":0.0-1.0,
+  "confidence":0.0-1.0,
+  "occurredAt":"ISO-8601 datetime when the event happened, if known, else omit",
+  "involvedKeys":["external participant keys besides the speaker, if social"],
+  "aboutSpeaker":true if this participant-scoped memory is primarily about the current speaker,
+  "evolvesPrior":true if this replaces or updates an earlier feeling/opinion about the same person
+}]}
+
+Include: stable preferences, relationships, multi-user events, timelines, and evolving attitudes toward people.
+Extract how the persona feels about someone when stated or clearly implied; mark evolvesPrior when sentiment changed.
+Skip: pure greetings, empty small talk, one-off jokes, meta instructions to the AI.
 If nothing qualifies, return {"candidates":[]}.`;
 
+type ExtractCandidate = {
+  content?: string;
+  summary?: string;
+  kind?: "semantic" | "episodic";
+  scope?: "participant" | "social" | "general";
+  importance?: number;
+  confidence?: number;
+  occurredAt?: string;
+  involvedKeys?: string[];
+  aboutSpeaker?: boolean;
+  evolvesPrior?: boolean;
+};
+
 type ExtractResponse = {
-  candidates?: {
-    content?: string;
-    summary?: string;
-    kind?: "semantic" | "episodic";
-    importance?: number;
-    confidence?: number;
-  }[];
+  candidates?: ExtractCandidate[];
 };
 
 export class MemoryCurator {
@@ -64,12 +88,15 @@ export class MemoryCurator {
     assistantReply: string;
   }): Promise<void> {
     if (!this.memory.isAvailable() || !this.llm.isAvailable()) return;
-    if (!input.speaker) return;
     if (input.userMessage.trim().length < this.config.minUserMessageLength) return;
 
     const provider = await this.llm.createActiveProvider();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
+
+    const speakerLine = input.speaker
+      ? `Speaker: ${input.speaker.displayName} (${input.speaker.key})\n`
+      : "Speaker: (unknown — only extract general or clearly multi-party social memories)\n";
 
     try {
       const result = await provider.complete({
@@ -77,11 +104,11 @@ export class MemoryCurator {
           { role: "system", content: EXTRACTOR_SYSTEM },
           {
             role: "user",
-            content: `Speaker: ${input.speaker.displayName} (${input.speaker.key})\nUser message:\n${input.userMessage}\n\nAssistant reply:\n${input.assistantReply}`,
+            content: `${speakerLine}User message:\n${input.userMessage}\n\nAssistant reply:\n${input.assistantReply}`,
           },
         ],
         temperature: 0.2,
-        maxTokens: 600,
+        maxTokens: 900,
         signal: controller.signal,
       });
 
@@ -95,14 +122,40 @@ export class MemoryCurator {
         const confidence = clamp01(raw.confidence ?? 0.5);
         if (confidence < this.config.minConfidence) continue;
 
+        const scope = raw.scope ?? (raw.aboutSpeaker !== false && input.speaker ? "participant" : "general");
+        if (scope === "participant" && !input.speaker) continue;
+
+        const subject =
+          scope === "participant" && input.speaker && raw.aboutSpeaker !== false ? input.speaker : undefined;
+
+        let involved: ParticipantRef[] | undefined;
+        if (scope === "social") {
+          const keys = new Set(raw.involvedKeys ?? []);
+          if (input.speaker) keys.add(input.speaker.key);
+          involved = [...keys].map((key) => ({
+            key,
+            displayName: key === input.speaker?.key ? input.speaker.displayName : key,
+            kind: "user" as const,
+          }));
+        }
+
+        let supersedesMemoryId: string | undefined;
+        if (scope === "participant" && subject && raw.evolvesPrior) {
+          supersedesMemoryId = await this.findSupersedesCandidate(input.personaId, subject.key, raw.summary ?? content);
+        }
+
         const response = await this.memory.propose({
           personaId: input.personaId,
           kind: raw.kind === "episodic" ? "episodic" : "semantic",
+          scope,
           content,
           summary: raw.summary?.slice(0, 500) ?? content.slice(0, 120),
           confidence,
           importance: clamp01(raw.importance ?? 0.5),
-          subject: input.speaker,
+          occurredAt: raw.occurredAt,
+          subject,
+          involved,
+          supersedesMemoryId,
           source: {
             type: "conversation",
             sourceId: input.sessionId,
@@ -128,6 +181,25 @@ export class MemoryCurator {
       }
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  private async findSupersedesCandidate(
+    personaId: string,
+    subjectKey: string,
+    query: string,
+  ): Promise<string | undefined> {
+    try {
+      const result = (await this.memory.search({
+        personaId,
+        subjectKey,
+        query: query.slice(0, 200),
+        lifecycleState: "active",
+        limit: 5,
+      })) as { items?: { id: string }[] };
+      return result.items?.[0]?.id;
+    } catch {
+      return undefined;
     }
   }
 }

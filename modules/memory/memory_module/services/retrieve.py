@@ -4,8 +4,22 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from memory_module.config import settings
-from memory_module.db.models import Conversation, Episode, LifecycleState, Message, Participant
+from memory_module.db.models import Conversation, Message, Participant
 from memory_module.services.participants import resolve_participant
+
+
+def _recent_interlocutors(session: Session, persona_id: uuid.UUID, limit: int = 6) -> list[Participant]:
+    return list(
+        session.scalars(
+            select(Participant)
+            .where(
+                Participant.persona_id == persona_id,
+                Participant.last_interaction_at.isnot(None),
+            )
+            .order_by(Participant.last_interaction_at.desc())
+            .limit(limit)
+        ).all()
+    )
 
 
 def retrieve_context(
@@ -32,6 +46,24 @@ def retrieve_context(
             return
         blocks.append(block)
         used_tokens += est
+
+    recent_people = _recent_interlocutors(session, persona_id)
+    if recent_people:
+        parts = []
+        for p in recent_people:
+            when = p.last_interaction_at.isoformat() if p.last_interaction_at else "unknown"
+            label = p.display_name or p.external_id or str(p.id)
+            parts.append(f"{label} (last spoke {when})")
+        line = "Recent people this persona has talked to: " + "; ".join(parts)
+        try_add(
+            {
+                "type": "memory",
+                "id": "recent-interlocutors",
+                "text": f"(social context) {line}",
+                "estimatedTokens": max(1, len(line) // 4),
+                "sources": [{"type": "participant", "id": str(p.id)} for p in recent_people],
+            }
+        )
 
     if session_id:
         conv = session.scalar(
@@ -66,24 +98,41 @@ def retrieve_context(
                 if len(blocks) >= max_items:
                     break
 
-    subject_filter = ""
-    params: dict = {"persona_id": persona_id, "query": query, "lim": max_items}
-    if subject_id:
-        subject_filter = "AND (subject_participant_id IS NULL OR subject_participant_id = :subject_id)"
-        params["subject_id"] = subject_id
+    scope_filter = """
+              AND (
+                scope = 'general'
+                OR (
+                  scope = 'participant'
+                  AND (:subject_id IS NULL OR subject_participant_id IS NULL OR subject_participant_id = :subject_id)
+                )
+                OR (
+                  scope = 'social'
+                  AND (
+                    :subject_id IS NULL
+                    OR subject_participant_id = :subject_id
+                    OR EXISTS (
+                      SELECT 1 FROM memory_involvements mi
+                      WHERE mi.memory_id = memories.id AND mi.participant_id = :subject_id
+                    )
+                  )
+                )
+              )
+    """
+    params: dict = {"persona_id": persona_id, "query": query, "lim": max_items, "subject_id": subject_id}
 
     fts_rows = session.execute(
         text(
             f"""
-            SELECT id, kind, coalesce(summary, left(content, 400)) AS snippet,
-                   confidence, importance
+            SELECT id, kind, scope, coalesce(summary, left(content, 400)) AS snippet,
+                   confidence, importance, occurred_at, created_at
             FROM memories
             WHERE persona_id = :persona_id
               AND lifecycle_state = 'active'
               AND search_vector @@ plainto_tsquery('english', :query)
-              {subject_filter}
+              {scope_filter}
             ORDER BY ts_rank(search_vector, plainto_tsquery('english', :query)) DESC,
-                     importance DESC
+                     importance DESC,
+                     coalesce(occurred_at, created_at) DESC
             LIMIT :lim
             """
         ),
@@ -92,12 +141,14 @@ def retrieve_context(
 
     for row in fts_rows:
         snippet = row["snippet"] or ""
+        when = row["occurred_at"] or row["created_at"]
+        when_note = f" @ {when.isoformat()}" if when else ""
         est = max(1, len(snippet) // 4)
         try_add(
             {
                 "type": "memory",
                 "id": str(row["id"]),
-                "text": f"(memory:{row['kind']}) {snippet}",
+                "text": f"(memory:{row['kind']}/{row['scope']}){when_note} {snippet}",
                 "estimatedTokens": est,
                 "sources": [{"type": "memory", "id": str(row["id"])}],
             }
@@ -107,24 +158,49 @@ def retrieve_context(
             break
 
     if len(blocks) < max_items:
-        episodes = session.scalars(
-            select(Episode)
-            .where(
-                Episode.persona_id == persona_id,
-                Episode.lifecycle_state == LifecycleState.active,
-            )
-            .order_by(Episode.importance.desc(), Episode.created_at.desc())
-            .limit(max_items)
-        ).all()
-        for ep in episodes:
-            est = max(1, len(ep.summary) // 4)
+        ep_limit = max_items - len(blocks)
+        ep_rows = session.execute(
+            text(
+                """
+                SELECT id, summary, started_at, created_at, importance
+                FROM episodes
+                WHERE persona_id = :persona_id
+                  AND lifecycle_state = 'active'
+                  AND search_vector @@ plainto_tsquery('english', :query)
+                ORDER BY ts_rank(search_vector, plainto_tsquery('english', :query)) DESC,
+                         importance DESC,
+                         coalesce(started_at, created_at) DESC
+                LIMIT :lim
+                """
+            ),
+            {"persona_id": persona_id, "query": query, "lim": ep_limit},
+        ).mappings().all()
+        if not ep_rows:
+            ep_rows = session.execute(
+                text(
+                    """
+                    SELECT id, summary, started_at, created_at, importance
+                    FROM episodes
+                    WHERE persona_id = :persona_id
+                      AND lifecycle_state = 'active'
+                    ORDER BY importance DESC, coalesce(started_at, created_at) DESC
+                    LIMIT :lim
+                    """
+                ),
+                {"persona_id": persona_id, "lim": ep_limit},
+            ).mappings().all()
+        for row in ep_rows:
+            summary = row["summary"] or ""
+            est = max(1, len(summary) // 4)
+            when = row["started_at"] or row["created_at"]
+            when_note = f" @ {when.isoformat()}" if when else ""
             try_add(
                 {
                     "type": "episode",
-                    "id": str(ep.id),
-                    "text": f"(episode) {ep.summary}",
+                    "id": str(row["id"]),
+                    "text": f"(episode){when_note} {summary}",
                     "estimatedTokens": est,
-                    "sources": [{"type": "episode", "id": str(ep.id)}],
+                    "sources": [{"type": "episode", "id": str(row["id"])}],
                 }
             )
             if len(blocks) >= max_items:

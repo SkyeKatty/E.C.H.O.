@@ -5,8 +5,7 @@ from datetime import datetime, timezone
 
 from memory_module.config import settings
 from memory_module.db.session import SessionLocal
-from memory_module.services import conversation, memory_ops, retrieve
-from memory_module.db.models import Episode, LifecycleState
+from memory_module.services import conversation, episodes, memory_ops, retrieve
 from memory_module.services.persona import ensure_persona
 from memory_module.ws.client import MemoryModuleClient
 
@@ -72,6 +71,8 @@ async def handle_list(_env, params, _cancel) -> dict:
             _parse_uuid(body["sessionId"], "sessionId"),
             int(body.get("limit", 100)),
             body.get("beforeSequence"),
+            body.get("fromSequence"),
+            body.get("toSequence"),
         )
 
 
@@ -124,30 +125,20 @@ async def handle_delete(_env, params, _cancel) -> dict:
         return memory_ops.delete_memory(session, _parse_uuid(body["personaId"], "personaId"), body)
 
 
+async def handle_compaction_state(_env, params, _cancel) -> dict:
+    body = params or {}
+    with _session_scope() as session:
+        return episodes.compaction_state(
+            session,
+            _parse_uuid(body["personaId"], "personaId"),
+            _parse_uuid(body["sessionId"], "sessionId"),
+        )
+
+
 async def handle_episode(_env, params, _cancel) -> dict:
     body = params or {}
-    persona_id = _parse_uuid(body["personaId"], "personaId")
-    session_id = _parse_uuid(body["sessionId"], "sessionId")
     with _session_scope() as session:
-        ensure_persona(session, persona_id)
-        from sqlalchemy import select
-        from memory_module.db.models import Conversation
-
-        conv = session.scalar(
-            select(Conversation).where(
-                Conversation.persona_id == persona_id, Conversation.session_id == session_id
-            )
-        )
-        ep = Episode(
-            persona_id=persona_id,
-            conversation_id=conv.id if conv else None,
-            summary=body["summary"],
-            importance=body.get("importance", 0.5),
-            lifecycle_state=LifecycleState.active,
-        )
-        session.add(ep)
-        session.flush()
-        return {"episodeId": str(ep.id)}
+        return episodes.record_episode(session, _parse_uuid(body["personaId"], "personaId"), body)
 
 
 async def handle_jobs(_env, _params, _cancel) -> dict:
@@ -181,6 +172,12 @@ def main() -> None:
         },
         {"id": "memory.conversation.append", "name": "Append messages", "version": "1.0.0", "enabled": True},
         {"id": "memory.conversation.list", "name": "List messages", "version": "1.0.0", "enabled": True},
+        {
+            "id": "memory.conversation.compaction-state",
+            "name": "Compaction cursor",
+            "version": "1.0.0",
+            "enabled": True,
+        },
         {"id": "memory.context.retrieve", "name": "Retrieve context", "version": "1.0.0", "enabled": True},
         {"id": "memory.episode.record", "name": "Record episode", "version": "1.0.0", "enabled": True},
         {"id": "memory.search", "name": "Search memories", "version": "1.0.0", "enabled": True},
@@ -194,6 +191,7 @@ def main() -> None:
         "memory.health.get": handle_health,
         "memory.conversation.append": handle_append,
         "memory.conversation.list": handle_list,
+        "memory.conversation.compaction-state": handle_compaction_state,
         "memory.context.retrieve": handle_retrieve,
         "memory.episode.record": handle_episode,
         "memory.search": handle_search,

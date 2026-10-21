@@ -36,6 +36,13 @@ export const conversationListSchema = personaScopeSchema.extend({
   sessionId: z.string().uuid(),
   limit: z.number().int().min(1).max(500).default(100),
   beforeSequence: z.number().int().positive().optional(),
+  /** Inclusive range fetch (ascending) for episode compaction. */
+  fromSequence: z.number().int().positive().optional(),
+  toSequence: z.number().int().positive().optional(),
+});
+
+export const conversationCompactionStateSchema = personaScopeSchema.extend({
+  sessionId: z.string().uuid(),
 });
 
 export const contextRetrieveSchema = personaScopeSchema.extend({
@@ -50,6 +57,9 @@ export const contextRetrieveSchema = personaScopeSchema.extend({
 export const memorySearchSchema = personaScopeSchema.extend({
   query: z.string().max(500).optional(),
   kind: z.enum(["semantic", "episodic", "procedural"]).optional(),
+  scope: z.enum(["participant", "social", "general"]).optional(),
+  /** Filter memories whose primary subject matches this participant key. */
+  subjectKey: z.string().min(1).max(128).optional(),
   lifecycleState: z.enum(["candidate", "active", "superseded", "deleted"]).optional(),
   limit: z.number().int().min(1).max(100).default(25),
   offset: z.number().int().min(0).default(0),
@@ -61,12 +71,17 @@ export const memoryGetSchema = personaScopeSchema.extend({
 
 export const memoryProposeSchema = personaScopeSchema.extend({
   kind: z.enum(["semantic", "episodic"]).default("semantic"),
+  scope: z.enum(["participant", "social", "general"]).optional(),
   content: z.string().min(1).max(32_000),
   summary: z.string().max(500).optional(),
   confidence: z.number().min(0).max(1).default(0.5),
   importance: z.number().min(0).max(1).default(0.5),
-  /** Who this memory is about (usually the user who spoke). Required for auto-promotion. */
+  /** When the remembered event happened (distinct from when it was stored). */
+  occurredAt: z.string().datetime().optional(),
+  /** Who this memory is about (usually the user who spoke). Required for auto-promotion of participant scope. */
   subject: participantSchema.optional(),
+  /** Additional people involved in social memories. */
+  involved: z.array(participantSchema).max(20).optional(),
   source: z.object({
     type: z.enum(["conversation", "episode", "operator", "consolidation"]),
     sourceId: z.string().uuid().optional(),
@@ -74,6 +89,8 @@ export const memoryProposeSchema = personaScopeSchema.extend({
   }),
   relatedMemoryIds: z.array(z.string().uuid()).optional(),
   contradictionOfMemoryId: z.string().uuid().optional(),
+  /** When set, the new memory replaces an older active one after promotion (e.g. evolving feelings). */
+  supersedesMemoryId: z.string().uuid().optional(),
 });
 
 export const memoryUpdateSchema = personaScopeSchema.extend({
@@ -98,7 +115,18 @@ export const episodeRecordSchema = personaScopeSchema.extend({
   importance: z.number().min(0).max(1).default(0.5),
   startedAt: z.string().datetime().optional(),
   endedAt: z.string().datetime().optional(),
+  fromSequence: z.number().int().positive().optional(),
+  toSequence: z.number().int().positive().optional(),
+  idempotencyKey: z.string().min(1).max(128).optional(),
 });
+
+export type ConversationCompactionState = {
+  conversationId: string | null;
+  channel: string | null;
+  maxSequence: number;
+  compactedThroughSequence: number;
+  messageCount: number;
+};
 
 export type ContextRetrieveResult = {
   blocks: {

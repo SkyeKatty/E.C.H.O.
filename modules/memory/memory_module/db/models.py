@@ -36,6 +36,14 @@ class MemoryKind(str, enum.Enum):
     procedural = "procedural"
 
 
+class MemoryScope(str, enum.Enum):
+    """Who a memory is about: one person, several people, or nobody in particular."""
+
+    participant = "participant"
+    social = "social"
+    general = "general"
+
+
 class Persona(Base):
     __tablename__ = "personas"
 
@@ -54,6 +62,7 @@ class Participant(Base):
     kind: Mapped[str] = mapped_column(String(32), default="user")
     display_name: Mapped[str | None] = mapped_column(String(256))
     external_id: Mapped[str | None] = mapped_column(String(128))
+    last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Conversation(Base):
@@ -68,6 +77,7 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    compacted_through_sequence: Mapped[int] = mapped_column(Integer, default=0)
 
     messages: Mapped[list["Message"]] = relationship(back_populates="conversation")
 
@@ -108,6 +118,9 @@ class Episode(Base):
     lifecycle_state: Mapped[LifecycleState] = mapped_column(Enum(LifecycleState), default=LifecycleState.active)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    from_sequence: Mapped[int | None] = mapped_column(Integer)
+    to_sequence: Mapped[int | None] = mapped_column(Integer)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     search_vector: Mapped[str | None] = mapped_column(TSVECTOR)
 
@@ -136,8 +149,21 @@ class Memory(Base):
     subject_participant_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("participants.id", ondelete="SET NULL"), index=True
     )
+    scope: Mapped[MemoryScope] = mapped_column(Enum(MemoryScope), default=MemoryScope.participant)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     provenance: Mapped[list["MemoryProvenance"]] = relationship(back_populates="memory")
+
+
+class MemoryInvolvement(Base):
+    __tablename__ = "memory_involvements"
+
+    memory_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("memories.id", ondelete="CASCADE"), primary_key=True
+    )
+    participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("participants.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
 
 
 class MemoryProvenance(Base):

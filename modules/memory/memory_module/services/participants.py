@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -52,3 +53,7 @@ def resolve_participant(
     display = body.get("displayName") or body.get("display_name") or str(key)
     kind = body.get("kind") or "user"
     return ensure_participant(session, persona_id, str(key), str(display), str(kind))
+
+
+def touch_last_interaction(session: Session, participant: Participant, at: datetime | None = None) -> None:
+    participant.last_interaction_at = at or datetime.now(timezone.utc)
