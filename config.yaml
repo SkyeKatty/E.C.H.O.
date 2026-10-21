@@ -1,0 +1,15 @@
+controller:
+  id: echo-controller
+  host: 127.0.0.1
+  port: 8787
+
+persona:
+  name: Echo
+  reactiveOnly: true
+
+cognition:
+  defaultProvider: openrouter
+
+logging:
+  level: info
+  pretty: true

@@ -1,0 +1,20 @@
+{
+  "name": "echo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Modular AI persona runtime",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "dev": "pnpm --filter @echo/controller dev",
+    "dev:web": "pnpm --filter @echo/web dev",
+    "dev:mock": "pnpm --filter @echo/module-mock dev",
+    "dev:llm": "pnpm --filter @echo/module-llm dev",
+    "dev:memory": "cd modules/memory && python -m memory_module",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

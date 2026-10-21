@@ -1,0 +1,53 @@
+# Copy to config.yaml and adjust for your environment.
+# Secrets: use environment variables (see docs/LLM_PROVIDERS.md).
+
+controller:
+  id: echo-controller
+  host: 127.0.0.1
+  port: 8787
+  moduleWsPath: /ws/modules
+  dashboardWsPath: /ws/dashboard
+  # moduleAuthToken: set via ECHO_MODULE_AUTH_TOKEN in production
+
+persona:
+  name: Echo
+  reactiveOnly: true
+  # identity, communicationStyle, behavioralGuidelines: optional multi-line strings
+
+cognition:
+  # llmAdapter: module   # default — run pnpm dev:llm
+  # llmAdapter: embedded # in-controller LLM (no separate module process)
+  defaultProvider: openrouter
+  maxToolIterations: 6
+  requestTimeoutMs: 120000
+  moduleRequestTimeoutMs: 30000
+
+providers:
+  - id: openrouter
+    type: openrouter
+    model: openai/gpt-4o-mini
+    # apiKey: prefer OPENROUTER_API_KEY env var
+
+  - id: local-gpu
+    type: openai_compatible
+    label: Local GPU (Ollama)
+    baseUrl: http://127.0.0.1:11434/v1
+    model: llama3.2
+    capabilities:
+      toolCalling: false
+      streaming: true
+      vision: false
+
+memory:
+  autoExtract: true
+  extractMinConfidence: 0.65
+  extractMinUserMessageLength: 12
+  extractTimeoutMs: 45000
+
+logging:
+  level: info
+  pretty: true
+
+modules:
+  heartbeatIntervalMs: 15000
+  heartbeatTimeoutMs: 45000

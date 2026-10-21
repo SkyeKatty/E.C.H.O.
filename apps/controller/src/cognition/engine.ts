@@ -1,0 +1,311 @@
+import type { ModuleRegistry } from "../registry/module-registry.js";
+import type { ModuleGateway } from "../ws/module-gateway.js";
+import type { LlmBackend } from "../llm/llm-backend.js";
+import type { CharacterCardStore } from "../characters/store.js";
+import type { RuntimePersonaPolicy } from "../characters/prompt.js";
+import type { PersonaOperationalState } from "../persona/state.js";
+import type { EventLog } from "../persona/state.js";
+import { assembleChatMessages } from "./context.js";
+import { runCognitiveLoop, type CognitiveTraceEvent } from "./loop.js";
+import { SessionStore } from "./session-store.js";
+import { buildToolRouting } from "./tools.js";
+import type { MemoryModuleService } from "../memory/memory-module-service.js";
+import type { MemoryCurator } from "../memory/memory-curator.js";
+import type { ParticipantRef } from "../memory/participant.js";
+
+export type CognitiveEngineConfig = {
+  maxToolIterations: number;
+  requestTimeoutMs: number;
+  moduleRequestTimeoutMs: number;
+};
+
+export class CognitiveEngine {
+  private readonly sessions = new SessionStore();
+  private activeTasks = new Map<string, AbortController>();
+
+  constructor(
+    private readonly llm: LlmBackend,
+    private readonly moduleRegistry: ModuleRegistry,
+    private readonly moduleGateway: ModuleGateway,
+    private readonly characters: CharacterCardStore,
+    private readonly runtimePolicy: RuntimePersonaPolicy,
+    private readonly getPersonaState: () => PersonaOperationalState,
+    private readonly setPersonaState: (patch: Partial<PersonaOperationalState>) => void,
+    private readonly eventLog: EventLog,
+    private readonly config: CognitiveEngineConfig,
+    private readonly memory: MemoryModuleService | null = null,
+    private readonly memoryCurator: MemoryCurator | null = null,
+  ) {}
+
+  isChatAvailable(): boolean {
+    return this.llm.isAvailable();
+  }
+
+  async listProviders() {
+    if (!this.llm.isAvailable()) return [];
+    return this.llm.listProviders();
+  }
+
+  async getActiveProviderId() {
+    if (!this.llm.isAvailable()) return null;
+    return this.llm.getActiveProviderId();
+  }
+
+  async setActiveProvider(id: string) {
+    const data = await this.llm.updateSettings({ activeProviderId: id });
+    const profile = data.settings.providers.find((p) => p.id === data.settings.activeProviderId);
+    this.setPersonaState({
+      activeProvider: data.settings.activeProviderId,
+      activeModel: profile?.model ?? null,
+    });
+    this.eventLog.append({
+      type: "cognition.provider",
+      summary: `Active LLM provider set to ${profile?.label ?? id} (${profile?.model ?? "?"})`,
+    });
+    return this.llm.listProviders();
+  }
+
+  cancelTask(taskId: string): boolean {
+    const controller = this.activeTasks.get(taskId);
+    if (!controller) return false;
+    controller.abort();
+    this.activeTasks.delete(taskId);
+    return true;
+  }
+
+  async chat(input: {
+    message: string;
+    sessionId?: string;
+    taskId?: string;
+    speaker?: ParticipantRef;
+    stream?: boolean;
+    providerId?: string;
+    generation?: { temperature?: number; maxTokens?: number };
+    onStream?: (chunk: string) => void;
+    onTrace?: (ev: CognitiveTraceEvent) => void;
+    onStarted?: (meta: { taskId: string; sessionId: string }) => void;
+  }): Promise<{
+    sessionId: string;
+    taskId: string;
+    reply: string;
+    providerId: string;
+    model: string;
+    usage?: { totalTokens?: number };
+  }> {
+    if (!this.llm.isAvailable()) {
+      throw new Error(
+        this.llm.adapter === "embedded"
+          ? "LLM runtime is unavailable."
+          : "LLM module is not connected. Start the LLM module (pnpm dev:llm) or set cognition.llmAdapter: embedded.",
+      );
+    }
+
+    if (input.providerId) {
+      await this.setActiveProvider(input.providerId);
+    }
+
+    if (input.generation) {
+      const { settings } = await this.llm.getSettings();
+      const active = settings.activeProviderId;
+      await this.llm.updateSettings({
+        profile: {
+          id: active,
+          generation: input.generation,
+        },
+      });
+    }
+
+    const session = this.sessions.getOrCreate(input.sessionId);
+    const taskId = input.taskId ?? crypto.randomUUID();
+    const abort = new AbortController();
+    this.activeTasks.set(taskId, abort);
+    input.onStarted?.({ taskId, sessionId: session.id });
+
+    const provider = await this.llm.createActiveProvider();
+
+    this.setPersonaState({
+      activity: "thinking",
+      focus: "conversation",
+      activeProvider: provider.id,
+      activeModel: provider.model,
+      pendingActions: this.activeTasks.size,
+    });
+
+    const { tools, toolNameToCapabilityId } = buildToolRouting(
+      this.moduleRegistry.snapshot().modules.flatMap((m) => m.capabilities),
+    );
+
+    const character = this.characters.getActive();
+    if (!character) {
+      throw new Error("No active character card. Create or activate a character in the dashboard.");
+    }
+
+    const memoryAvailable = this.memory?.isAvailable() ?? false;
+    if (memoryAvailable && this.sessions.isEmpty(session.id)) {
+      try {
+        const listed = await this.memory!.listConversation({
+          personaId: character.id,
+          sessionId: session.id,
+          limit: 80,
+        });
+        if (listed.messages.length) {
+          this.sessions.replaceHistory(
+            session.id,
+            listed.messages.map((m) => ({
+              role: m.role as "user" | "assistant" | "system" | "tool",
+              content: m.content,
+            })),
+          );
+        }
+      } catch (err) {
+        this.eventLog.append({
+          type: "memory.warn",
+          summary: `Could not hydrate session history: ${err instanceof Error ? err.message : "unknown"}`,
+        });
+      }
+    }
+
+    let memoryInjection = "";
+    if (memoryAvailable) {
+      try {
+        if (!input.speaker) {
+          this.eventLog.append({
+            type: "memory.warn",
+            summary: "No speaker identity on chat turn; memories may stay candidate until speaker is set",
+          });
+        }
+        const retrieved = await this.memory!.retrieveContext({
+          personaId: character.id,
+          sessionId: session.id,
+          speaker: input.speaker,
+          query: input.message,
+          tokenBudget: 2048,
+        });
+        memoryInjection = retrieved.injectedText;
+        if (retrieved.truncated) {
+          this.eventLog.append({
+            type: "memory.retrieve",
+            summary: `Memory context truncated (${retrieved.estimatedTokens}/${retrieved.tokenBudget} tokens)`,
+          });
+        }
+      } catch (err) {
+        this.eventLog.append({
+          type: "memory.warn",
+          summary: `Memory retrieval skipped: ${err instanceof Error ? err.message : "unknown"}`,
+        });
+      }
+    }
+
+    const messages = assembleChatMessages({
+      character,
+      policy: this.runtimePolicy,
+      state: this.getPersonaState(),
+      history: this.sessions.history(session.id),
+      userMessage: input.speaker
+        ? `[${input.speaker.displayName}] ${input.message}`
+        : input.message,
+      memoryInjection,
+      historyLimit: memoryAvailable ? 12 : undefined,
+    });
+
+    this.eventLog.append({
+      type: "chat.user",
+      summary: `User message (${input.message.slice(0, 80)}${input.message.length > 80 ? "…" : ""})`,
+    });
+
+    try {
+      const result = await runCognitiveLoop({
+        messages,
+        stream: input.stream ?? true,
+        signal: abort.signal,
+        onStream: (ev) => {
+          if (ev.type === "text-delta") input.onStream?.(ev.delta);
+        },
+        options: {
+          provider,
+          tools,
+          maxIterations: this.config.maxToolIterations,
+          requestTimeoutMs: this.config.requestTimeoutMs,
+          resolveCapabilityId: (toolName) => toolNameToCapabilityId.get(toolName) ?? toolName,
+          invokeModule: (capabilityId, params, opts) =>
+            this.moduleGateway.invokeCapability(capabilityId, params, {
+              signal: opts?.signal,
+              timeoutMs: this.config.moduleRequestTimeoutMs,
+            }),
+          onEvent: input.onTrace,
+        },
+      });
+
+      this.sessions.append(session.id, { role: "user", content: input.message }, ...result.newMessages);
+
+      const reply = result.assistantMessage.content ?? "";
+
+      if (memoryAvailable) {
+        try {
+          await this.memory!.appendConversation({
+            personaId: character.id,
+            sessionId: session.id,
+            speaker: input.speaker,
+            messages: [
+              { idempotencyKey: `${taskId}:user`, role: "user", content: input.message },
+              { idempotencyKey: `${taskId}:assistant`, role: "assistant", content: reply },
+            ],
+          });
+        } catch (err) {
+          this.eventLog.append({
+            type: "memory.warn",
+            summary: `Failed to persist conversation: ${err instanceof Error ? err.message : "unknown"}`,
+          });
+        }
+
+        this.memoryCurator?.processTurn({
+          personaId: character.id,
+          sessionId: session.id,
+          turnId: taskId,
+          speaker: input.speaker,
+          userMessage: input.message,
+          assistantReply: reply,
+        });
+      }
+      const usageNote =
+        result.usage?.totalTokens != null ? ` · ${result.usage.totalTokens} tokens` : "";
+      this.eventLog.append({
+        type: "chat.assistant",
+        summary: `Assistant reply (${reply.slice(0, 80)}${reply.length > 80 ? "…" : ""})${usageNote}`,
+      });
+      if (result.usage?.totalTokens != null) {
+        this.eventLog.append({
+          type: "cognition.usage",
+          summary: `LLM usage: ${result.usage.totalTokens} tokens (${result.providerId}/${result.model})`,
+        });
+      }
+
+      this.setPersonaState({
+        activity: "idle",
+        focus: "conversation",
+        pendingActions: Math.max(0, this.activeTasks.size - 1),
+        lastEventSummary: "Completed chat turn",
+      });
+
+      return {
+        sessionId: session.id,
+        taskId,
+        reply,
+        providerId: result.providerId,
+        model: result.model,
+        usage: result.usage,
+      };
+    } catch (err) {
+      this.setPersonaState({
+        activity: "idle",
+        focus: "conversation",
+        pendingActions: Math.max(0, this.activeTasks.size - 1),
+        lastEventSummary: err instanceof Error ? err.message : "Chat failed",
+      });
+      throw err;
+    } finally {
+      this.activeTasks.delete(taskId);
+    }
+  }
+}
+
