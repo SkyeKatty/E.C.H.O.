@@ -184,6 +184,23 @@ export class ModuleRegistry {
     return undefined;
   }
 
+  findModuleById(moduleId: string): RegisteredModule | undefined {
+    const m = this.modules.get(moduleId);
+    if (!m || m.connectionState === "disconnected") return undefined;
+    return this.toPublic(m);
+  }
+
+  listModulesWithCapability(capabilityId: string): RegisteredModule[] {
+    const out: RegisteredModule[] = [];
+    for (const m of this.modules.values()) {
+      if (m.connectionState === "disconnected") continue;
+      if (m.capabilities.some((c) => c.id === capabilityId && c.enabled)) {
+        out.push(this.toPublic(m));
+      }
+    }
+    return out.sort((a, b) => a.moduleId.localeCompare(b.moduleId));
+  }
+
   private toPublic(m: InternalModule): RegisteredModule {
     const { socketId: _, ...rest } = m;
     return rest;

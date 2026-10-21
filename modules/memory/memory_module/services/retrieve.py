@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 
 from memory_module.config import settings
 from memory_module.db.models import Conversation, Message, Participant
+from memory_module.embeddings.runtime import try_get_embedding_runtime
+from memory_module.services.memory_search import hybrid_memory_rows
 from memory_module.services.participants import resolve_participant
 
 
@@ -33,8 +35,10 @@ def retrieve_context(
 ) -> dict:
     subject = resolve_participant(session, persona_id, speaker)
     subject_id = subject.id if subject else None
-    semantic_available = bool(settings.embedding_enabled and settings.embedding_model)
+    runtime = try_get_embedding_runtime()
+    semantic_available = runtime is not None
     blocks: list[dict] = []
+    vector_ranking_used = False
     used_tokens = 0
     truncated = False
 
@@ -98,48 +102,11 @@ def retrieve_context(
                 if len(blocks) >= max_items:
                     break
 
-    scope_filter = """
-              AND (
-                scope = 'general'
-                OR (
-                  scope = 'participant'
-                  AND (:subject_id IS NULL OR subject_participant_id IS NULL OR subject_participant_id = :subject_id)
-                )
-                OR (
-                  scope = 'social'
-                  AND (
-                    :subject_id IS NULL
-                    OR subject_participant_id = :subject_id
-                    OR EXISTS (
-                      SELECT 1 FROM memory_involvements mi
-                      WHERE mi.memory_id = memories.id AND mi.participant_id = :subject_id
-                    )
-                  )
-                )
-              )
-    """
-    params: dict = {"persona_id": persona_id, "query": query, "lim": max_items, "subject_id": subject_id}
+    memory_rows, vector_ranking_used = hybrid_memory_rows(
+        session, persona_id, query, subject_id, max_items
+    )
 
-    fts_rows = session.execute(
-        text(
-            f"""
-            SELECT id, kind, scope, coalesce(summary, left(content, 400)) AS snippet,
-                   confidence, importance, occurred_at, created_at
-            FROM memories
-            WHERE persona_id = :persona_id
-              AND lifecycle_state = 'active'
-              AND search_vector @@ plainto_tsquery('english', :query)
-              {scope_filter}
-            ORDER BY ts_rank(search_vector, plainto_tsquery('english', :query)) DESC,
-                     importance DESC,
-                     coalesce(occurred_at, created_at) DESC
-            LIMIT :lim
-            """
-        ),
-        params,
-    ).mappings().all()
-
-    for row in fts_rows:
+    for row in memory_rows:
         snippet = row["snippet"] or ""
         when = row["occurred_at"] or row["created_at"]
         when_note = f" @ {when.isoformat()}" if when else ""
@@ -218,5 +185,5 @@ def retrieve_context(
         "tokenBudget": token_budget,
         "truncated": truncated,
         "semanticAvailable": semantic_available,
-        "ranking": {"fts": True, "vector": semantic_available, "structured": True},
+        "ranking": {"fts": True, "vector": vector_ranking_used, "structured": True},
     }

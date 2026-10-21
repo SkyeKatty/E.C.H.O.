@@ -10,6 +10,7 @@
     "dev:mock": "pnpm --filter @echo/module-mock dev",
     "dev:llm": "pnpm --filter @echo/module-llm dev",
     "dev:memory": "cd modules/memory && python -m memory_module",
+    "dev:memory:embed": "cd modules/memory && pip install -e \".[embeddings]\" && python -m memory_module",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck"
   },

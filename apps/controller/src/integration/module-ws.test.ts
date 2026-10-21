@@ -40,6 +40,7 @@ describe("module WebSocket integration", () => {
       ],
       logging: { level: "fatal", pretty: false },
       modules: { heartbeatIntervalMs: 15_000, heartbeatTimeoutMs: 45_000 },
+      memory: {},
     });
     app = built.app;
     await app.listen({ host: "127.0.0.1", port: 0 });

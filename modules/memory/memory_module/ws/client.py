@@ -34,7 +34,11 @@ class MemoryModuleClient:
     async def run(self) -> None:
         while True:
             try:
-                async with websockets.connect(self.controller_url, max_size=512 * 1024) as ws:
+                async with websockets.connect(
+                    self.controller_url,
+                    max_size=512 * 1024,
+                    open_timeout=30,
+                ) as ws:
                     self._ws = ws
                     await self._register(ws)
                     async for raw in ws:

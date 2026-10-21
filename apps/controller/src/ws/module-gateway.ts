@@ -271,14 +271,24 @@ export class ModuleGateway {
       signal?: AbortSignal;
       taskId?: string;
       onChunk?: (chunk: unknown) => void;
+      moduleId?: string;
     },
   ): Promise<unknown> {
-    const owner = this.registry.findCapabilityOwner(capabilityId);
+    const owner = options?.moduleId
+      ? this.registry.findModuleById(options.moduleId)
+      : this.registry.findCapabilityOwner(capabilityId);
     if (!owner) {
-      throw new Error(`No connected module provides capability "${capabilityId}"`);
+      throw new Error(
+        options?.moduleId
+          ? `Module "${options.moduleId}" is not connected`
+          : `No connected module provides capability "${capabilityId}"`,
+      );
     }
     if (owner.connectionState === "disconnected" || owner.healthStatus === "unavailable") {
       throw new Error(`Module for "${capabilityId}" is unavailable`);
+    }
+    if (options?.moduleId && !owner.capabilities.some((c) => c.id === capabilityId && c.enabled)) {
+      throw new Error(`Module "${options.moduleId}" does not provide "${capabilityId}"`);
     }
 
     this.registry.setBusy(owner.moduleId, true);

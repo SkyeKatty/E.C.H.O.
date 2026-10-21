@@ -12,6 +12,8 @@ export const MEMORY_CAPABILITIES = {
   UPDATE: "memory.update",
   DELETE: "memory.delete",
   JOB_LIST: "memory.job.list",
+  TRANSFER_EXPORT_CHUNK: "memory.transfer.export.chunk",
+  TRANSFER_IMPORT_CHUNK: "memory.transfer.import.chunk",
 } as const;
 
 export type MemoryCapabilityId = (typeof MEMORY_CAPABILITIES)[keyof typeof MEMORY_CAPABILITIES];

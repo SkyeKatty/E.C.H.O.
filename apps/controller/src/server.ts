@@ -22,6 +22,7 @@ import { MemoryModuleService } from "./memory/memory-module-service.js";
 import { MemoryCurator } from "./memory/memory-curator.js";
 import { EpisodeCompactor } from "./memory/episode-compactor.js";
 import { registerMemoryRoutes } from "./routes/memory.js";
+import { MemoryTransferService } from "./memory/memory-transfer-service.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -68,6 +69,8 @@ export async function buildServer(config: AppConfig) {
       memory: {
         moduleAvailable: memoryService?.isAvailable() ?? false,
         moduleId: memoryService?.isAvailable() ? memoryService.getModuleId() : null,
+        primaryModuleId: memoryCfg.primaryModuleId ?? null,
+        connectedModules: registry.listModulesWithCapability("memory.health.get").length,
       },
       character: {
         activeCharacterId: persona.activeCharacterId,
@@ -147,7 +150,17 @@ export async function buildServer(config: AppConfig) {
     app.log.info("LLM adapter: module (start pnpm dev:llm for chat)");
   }
 
-  memoryService = new MemoryModuleService(registry, moduleGateway, config.cognition.moduleRequestTimeoutMs);
+  memoryService = new MemoryModuleService(
+    registry,
+    moduleGateway,
+    config.cognition.moduleRequestTimeoutMs,
+    memoryCfg.primaryModuleId,
+  );
+  const memoryTransfer = new MemoryTransferService(
+    registry,
+    moduleGateway,
+    memoryCfg.transferRequestTimeoutMs ?? 120_000,
+  );
 
   const memoryCurator = new MemoryCurator(llmBackend, memoryService, eventLog, {
     enabled: memoryCfg.autoExtract,
@@ -184,6 +197,8 @@ export async function buildServer(config: AppConfig) {
       requestTimeoutMs: config.cognition.requestTimeoutMs,
       moduleRequestTimeoutMs: config.cognition.moduleRequestTimeoutMs,
       promptHistoryMessages: episodeCfg.hotWindowMessages,
+      memoryRetrievalTokenBudget: memoryCfg.retrieval?.tokenBudget,
+      memoryRetrievalMaxItems: memoryCfg.retrieval?.maxItems,
     },
     memoryService,
     memoryCurator,
@@ -196,7 +211,7 @@ export async function buildServer(config: AppConfig) {
     void syncPersonaFromLlmModule();
   }
   await registerChatRoutes(app, engine);
-  await registerMemoryRoutes(app, memoryService, characterStore);
+  await registerMemoryRoutes(app, memoryService, memoryTransfer, characterStore);
   await registerCharacterRoutes(app, characterStore, () => {
     syncPersonaFromActiveCharacter();
     eventLog.append({

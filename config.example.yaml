@@ -39,17 +39,28 @@ providers:
       vision: false
 
 memory:
+  primaryModuleId: memory-module-1
   autoExtract: true
+  transferRequestTimeoutMs: 120000
   extractMinConfidence: 0.65
   extractMinUserMessageLength: 12
   extractTimeoutMs: 45000
-  # Rolling episode summaries (independent of "session end" — important for Discord/Twitch)
+  retrieval:
+    tokenBudget: 2048
+    maxItems: 12
   episodeCompaction:
     enabled: true
-    hotWindowMessages: 24      # verbatim tail in LLM prompt (~12 turns)
-    minMessagesPerEpisode: 16  # backlog before compacting
+    hotWindowMessages: 24
+    minMessagesPerEpisode: 16
     maxMessagesPerEpisode: 80
     timeoutMs: 60000
+
+memoryModule:
+  moduleId: memory-module-1
+  databaseUrl: postgresql+psycopg://echo:echo@127.0.0.1:5432/echo_memory
+  embeddingModel: sentence-transformers/all-MiniLM-L6-v2
+  embeddingEnabled: true
+  consolidationEnabled: true
 
 logging:
   level: info

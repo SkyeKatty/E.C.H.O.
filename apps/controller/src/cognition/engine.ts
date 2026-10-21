@@ -20,6 +20,8 @@ export type CognitiveEngineConfig = {
   moduleRequestTimeoutMs: number;
   /** Recent messages passed verbatim to the LLM when memory module is active. */
   promptHistoryMessages?: number;
+  memoryRetrievalTokenBudget?: number;
+  memoryRetrievalMaxItems?: number;
 };
 
 export class CognitiveEngine {
@@ -183,7 +185,8 @@ export class CognitiveEngine {
           sessionId: session.id,
           speaker: input.speaker,
           query: input.message,
-          tokenBudget: 2048,
+          tokenBudget: this.config.memoryRetrievalTokenBudget ?? 2048,
+          maxItems: this.config.memoryRetrievalMaxItems ?? 12,
         });
         memoryInjection = retrieved.injectedText;
         if (retrieved.truncated) {

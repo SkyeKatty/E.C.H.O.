@@ -23,20 +23,33 @@ export class MemoryModuleService {
     private readonly moduleRegistry: ModuleRegistry,
     private readonly moduleGateway: ModuleGateway,
     private readonly requestTimeoutMs: number,
+    private readonly primaryModuleId?: string,
   ) {}
 
   isAvailable(): boolean {
-    return Boolean(this.moduleRegistry.findCapabilityOwner(MEMORY_HEALTH_GET));
+    return Boolean(this.resolveModuleId());
   }
 
   getModuleId(): string | null {
+    return this.resolveModuleId();
+  }
+
+  private resolveModuleId(): string | null {
+    if (this.primaryModuleId) {
+      const m = this.moduleRegistry.findModuleById(this.primaryModuleId);
+      if (m?.capabilities.some((c) => c.id === MEMORY_HEALTH_GET && c.enabled)) {
+        return m.moduleId;
+      }
+    }
     return this.moduleRegistry.findCapabilityOwner(MEMORY_HEALTH_GET)?.moduleId ?? null;
   }
 
   private async invoke<T>(capabilityId: string, params: unknown): Promise<T> {
     this.assertAvailable();
+    const moduleId = this.resolveModuleId() ?? undefined;
     const result = await this.moduleGateway.invokeCapability(capabilityId, params, {
       timeoutMs: this.requestTimeoutMs,
+      moduleId,
     });
     return result as T;
   }
@@ -114,6 +127,7 @@ export class MemoryModuleService {
     speaker?: ParticipantRef;
     query: string;
     tokenBudget?: number;
+    maxItems?: number;
   }): Promise<ContextRetrieveResult> {
     const body = contextRetrieveSchema.parse(params);
     return this.invoke(MEMORY_CONTEXT_RETRIEVE, body);

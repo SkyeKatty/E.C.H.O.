@@ -31,8 +31,10 @@ No blocking incompatibility with the WebSocket protocol: memory uses the same `r
 | `memory.update` | Optimistic concurrency (`expectedVersion`) |
 | `memory.delete` | Soft delete + index propagation |
 | `memory.job.list` | Background job diagnostics |
+| `memory.transfer.export.chunk` | Paginated DB export for migration |
+| `memory.transfer.import.chunk` | Idempotent merge import on target module |
 
-The controller **MemoryCurator** runs after each chat turn (when LLM + memory module are up), extracts durable facts via a structured LLM pass, and calls `memory.propose`. The memory module may **auto-promote** candidates to `active` when confidence/importance thresholds are met and no `contradicts` relation exists — otherwise they stay `candidate` until consolidation or operator review.
+The controller **MemoryCurator** runs after each chat turn (when LLM + memory module are up), extracts durable facts via a structured LLM pass, and calls `memory.propose`. The memory module may **auto-promote** candidates to `active` when confidence/importance thresholds are met and no `contradicts` relation to an **active** memory exists. Otherwise a **`consolidate_memory`** background job runs: near-duplicate merge, contradiction resolution (supersede weaker active memory when confidence delta ≥ policy), then promotion retry. Operators can also **promote** or **correct** in the dashboard.
 
 Operators **prune** memories in the dashboard (delete); there is no manual “save to memory” control.
 
@@ -58,7 +60,7 @@ Messages store `participant_id`. Memories store **subject_participant_id** (prim
 - **`participants.last_interaction_at`**: updated on each user message; retrieval injects **recent people talked to**.
 - **Evolving opinions**: extractor marks `evolvesPrior`; curator links `supersedesMemoryId` so the old active memory becomes `superseded` when the new one promotes.
 
-Run migrations through **`004`** after pull: `alembic upgrade head`.
+Run migrations through **`005`** after pull: `alembic upgrade head`.
 
 ### Episodes vs sessions (Discord / Twitch)
 
@@ -96,14 +98,45 @@ Raw messages remain in PostgreSQL; episodes plus atomic **memories** (curator) p
 | `ECHO_MEMORY_DATABASE_URL` | PostgreSQL URL (module only) |
 | `ECHO_CONTROLLER_MODULE_WS` | Controller module WebSocket URL |
 | `ECHO_MODULE_AUTH_TOKEN` | Must match controller |
-| `ECHO_MEMORY_EMBEDDING_MODEL` | Local model id (optional) |
+| `ECHO_MEMORY_EMBEDDING_MODEL` | HuggingFace / sentence-transformers model id (e.g. `sentence-transformers/all-MiniLM-L6-v2`, 384-dim) |
+| `ECHO_MEMORY_EMBEDDING_ENABLED` | `true` / `false` (defaults to **true** when model is set) |
+| `ECHO_MEMORY_EMBEDDING_DEVICE` | `cpu` or `cuda` |
+| `ECHO_MEMORY_EMBEDDING_DIMENSION` | Must match model output if not 384 (pgvector column is `vector(384)` in migration 005) |
+| `ECHO_MEMORY_EMBEDDING_POLL_SEC` | Worker poll interval (default 2) |
 | `ECHO_MEMORY_PERSONA_ID` | Default persona override (dev only) |
+
+Install embedding deps: `pip install -e ".[embeddings]"` in `modules/memory`, or `pnpm dev:memory:embed` from repo root.
+
+### Hybrid retrieval
+
+1. Active memories enqueue **`embed_memory`** jobs on auto-promotion.
+2. The in-process **embedding worker** encodes text, stores `vector_json` + pgvector `embedding` when dimension matches.
+3. `memory.context.retrieve` runs **FTS** and **cosine** (pgvector) candidate lists, merged with **reciprocal rank fusion**.
+4. `memory.health.get` reports `semanticAvailable` when the model is loaded, plus `pendingEmbedJobs`.
 
 ## Recovery
 
 - Messages and memories commit in PostgreSQL before ACK.
 - Embedding jobs are rows in `background_jobs`; retries after restart.
-- If embeddings are unavailable, retrieval uses FTS + structured filters only (`semanticAvailable: false` in response).
+- If embeddings are unavailable, retrieval uses FTS + structured filters only (`ranking.vector: false` in response).
+
+## Migrating memory to another machine (dual module transfer)
+
+Connect **two** memory modules to the same controller (different `ECHO_MEMORY_MODULE_ID` each). Point chat at the target via `memory.primaryModuleId` in `config.yaml`.
+
+1. **Source** (old DB): e.g. `ECHO_MEMORY_MODULE_ID=memory-source` + tunnel to old Postgres URL.
+2. **Target** (new DB): e.g. `ECHO_MEMORY_MODULE_ID=memory-target` + local Postgres.
+3. List modules: `GET /api/v1/memory/modules`
+4. **Dry run:** `POST /api/v1/memory/transfer` with `{ "sourceModuleId", "targetModuleId", "dryRun": true }`
+5. **Merge:** same body without `dryRun`; optional `personaIds`, `includeConversations`, `mode`: `merge` | `skip_existing`
+
+UUIDs are preserved so character card ids stay aligned with persona rows.
+
+## Configuration (`config.yaml`)
+
+Repo-root **`config.yaml`** is the shared local config. The **controller** reads `memory.*` (curator, episode compaction, `primaryModuleId`, transfer timeouts, **`memory.retrieval.tokenBudget` / `maxItems`** for chat recall). The **Python memory module** reads **`memoryModule.*`** on startup (via `memory_module/yaml_config.py`) and maps keys to `ECHO_*` env vars **only when those env vars are not already set** — so `.env`, launch scripts, and CI still override YAML.
+
+For a second module instance (migration), run with `ECHO_MEMORY_MODULE_ID=memory-target` and a different `databaseUrl` in env; keep `memory.primaryModuleId` on the controller pointed at the module you want chat to use.
 
 ## Deployment
 

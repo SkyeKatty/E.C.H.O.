@@ -115,6 +115,15 @@ const configSchema = z.object({
           timeoutMs: z.number().int().positive().default(60_000),
         })
         .default({}),
+      /** When multiple memory modules are connected, chat uses this module id. */
+      primaryModuleId: z.string().min(1).optional(),
+      transferRequestTimeoutMs: z.number().int().positive().default(120_000),
+      retrieval: z
+        .object({
+          tokenBudget: z.number().int().min(100).max(32_000).default(2_048),
+          maxItems: z.number().int().min(1).max(50).default(12),
+        })
+        .default({}),
     })
     .default({}),
 });
@@ -133,6 +142,12 @@ function applyEnvOverrides(raw: Record<string, unknown>): Record<string, unknown
     cognition.defaultProvider = process.env.ECHO_LLM_DEFAULT_PROVIDER;
   }
   raw.cognition = cognition;
+
+  const memory = (raw.memory as Record<string, unknown>) ?? {};
+  if (process.env.ECHO_MEMORY_PRIMARY_MODULE_ID) {
+    memory.primaryModuleId = process.env.ECHO_MEMORY_PRIMARY_MODULE_ID;
+  }
+  raw.memory = memory;
 
   return raw;
 }

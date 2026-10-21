@@ -10,12 +10,19 @@ dependencies = [
   "pydantic>=2.10.0",
   "pydantic-settings>=2.6.0",
   "websockets>=14.0",
+  "pyyaml>=6.0.2",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3.0",
   "pytest-asyncio>=0.24.0",
+]
+# Pin transformers below 4.48 so torch 2.3.x works (4.48+ requires torch >= 2.6).
+embeddings = [
+  "sentence-transformers>=3.3.1,<4.0.0",
+  "transformers>=4.41.0,<4.48.0",
+  "torch>=2.2.0",
 ]
 
 [project.scripts]

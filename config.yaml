@@ -1,15 +1,76 @@
+# ECHO local configuration (repo root). Secrets stay in .env / environment variables.
+
 controller:
   id: echo-controller
   host: 127.0.0.1
   port: 8787
+  moduleWsPath: /ws/modules
+  dashboardWsPath: /ws/dashboard
+  # moduleAuthToken: set ECHO_MODULE_AUTH_TOKEN in .env for production
 
 persona:
   name: Echo
   reactiveOnly: true
 
 cognition:
+  llmAdapter: module
   defaultProvider: openrouter
+  maxToolIterations: 6
+  requestTimeoutMs: 120000
+  moduleRequestTimeoutMs: 30000
+
+providers:
+  - id: openrouter
+    type: openrouter
+    model: openai/gpt-4o-mini
+
+  - id: local-gpu
+    type: openai_compatible
+    label: Local GPU (Ollama)
+    baseUrl: http://127.0.0.1:11434/v1
+    model: llama3.2
+    capabilities:
+      toolCalling: false
+      streaming: true
+      vision: false
+
+# Controller-side memory (chat, curator, episode compaction, transfer orchestration)
+memory:
+  primaryModuleId: memory-module-1
+  autoExtract: true
+  extractMinConfidence: 0.65
+  extractMinUserMessageLength: 12
+  extractTimeoutMs: 45000
+  transferRequestTimeoutMs: 120000
+  retrieval:
+    tokenBudget: 2048
+    maxItems: 12
+  episodeCompaction:
+    enabled: true
+    hotWindowMessages: 24
+    minMessagesPerEpisode: 16
+    maxMessagesPerEpisode: 80
+    timeoutMs: 60000
+
+# Python memory module process (modules/memory) — applied when env vars are not set
+memoryModule:
+  moduleId: memory-module-1
+  databaseUrl: postgresql+psycopg://echo:echo@127.0.0.1:5432/echo_memory
+  controllerModuleWs: ws://127.0.0.1:8787/ws/modules
+  embeddingModel: sentence-transformers/all-MiniLM-L6-v2
+  embeddingEnabled: true
+  embeddingDevice: cpu
+  embeddingPollSec: 2
+  consolidationEnabled: true
+  consolidationPollSec: 1.5
+  consolidationDuplicateRankMin: 0.08
+  consolidationContradictionDelta: 0.12
+  requireSubjectForPromotion: true
 
 logging:
   level: info
   pretty: true
+
+modules:
+  heartbeatIntervalMs: 15000
+  heartbeatTimeoutMs: 45000

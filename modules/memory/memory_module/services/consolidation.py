@@ -9,7 +9,7 @@ from memory_module.db.models import BackgroundJob, LifecycleState, Memory, Memor
 
 
 def _schedule_embedding_job(session: Session, memory_id: uuid.UUID, content_hash: str) -> None:
-    if not settings.embedding_enabled or not settings.embedding_model:
+    if not settings.semantic_configured():
         return
     key = f"embed:{memory_id}:{content_hash}"
     exists = session.scalar(select(BackgroundJob.id).where(BackgroundJob.idempotency_key == key))
@@ -18,6 +18,23 @@ def _schedule_embedding_job(session: Session, memory_id: uuid.UUID, content_hash
     session.add(
         BackgroundJob(
             job_type="embed_memory",
+            payload={"memoryId": str(memory_id), "contentHash": content_hash},
+            status="pending",
+            idempotency_key=key,
+        )
+    )
+
+
+def schedule_consolidation_job(session: Session, memory_id: uuid.UUID, content_hash: str) -> None:
+    if not settings.consolidation_enabled:
+        return
+    key = f"consolidate:{memory_id}:{content_hash}"
+    exists = session.scalar(select(BackgroundJob.id).where(BackgroundJob.idempotency_key == key))
+    if exists:
+        return
+    session.add(
+        BackgroundJob(
+            job_type="consolidate_memory",
             payload={"memoryId": str(memory_id), "contentHash": content_hash},
             status="pending",
             idempotency_key=key,
@@ -57,9 +74,11 @@ def maybe_auto_promote(session: Session, mem: Memory) -> bool:
 
     contradiction = session.scalar(
         select(MemoryRelation.id)
+        .join(Memory, Memory.id == MemoryRelation.to_memory_id)
         .where(
             MemoryRelation.from_memory_id == mem.id,
             MemoryRelation.relation_type == "contradicts",
+            Memory.lifecycle_state == LifecycleState.active,
         )
         .limit(1)
     )

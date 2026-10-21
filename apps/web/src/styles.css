@@ -171,6 +171,54 @@ body {
   }
 }
 
+.memory-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.memory-filters select {
+  min-width: 8rem;
+}
+
+.memory-edit-label {
+  display: block;
+  margin: 0.75rem 0;
+  font-size: 0.85rem;
+}
+
+.memory-edit-area {
+  width: 100%;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.memory-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.memory-transfer {
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+}
+
+.memory-transfer-result {
+  margin-top: 0.75rem;
+  max-height: 12rem;
+  overflow: auto;
+  font-size: 0.75rem;
+}
+
+.memory-job-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.85rem;
+}
+
 .memory-search {
   display: flex;
   gap: 0.5rem;

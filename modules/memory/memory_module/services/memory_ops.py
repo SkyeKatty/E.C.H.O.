@@ -15,7 +15,12 @@ from memory_module.db.models import (
     MemoryRelation,
     MemoryScope,
 )
-from memory_module.services.consolidation import maybe_auto_promote
+from memory_module.services.consolidation import (
+    apply_supersedes,
+    maybe_auto_promote,
+    schedule_consolidation_job,
+    _schedule_embedding_job,
+)
 from memory_module.services.participants import resolve_participant
 from memory_module.services.persona import ensure_persona
 from memory_module.services.scope import infer_scope, parse_occurred_at, resolve_involved
@@ -109,9 +114,9 @@ def get_memory(session: Session, persona_id: uuid.UUID, memory_id: uuid.UUID) ->
         "memory": {
             "id": str(mem.id),
             "kind": mem.kind.value,
+            "lifecycleState": mem.lifecycle_state.value,
             "content": mem.content,
             "summary": mem.summary,
-            "lifecycleState": mem.lifecycle_state.value,
             "confidence": mem.confidence,
             "importance": mem.importance,
             "version": mem.version,
@@ -204,6 +209,14 @@ def propose_memory(session: Session, persona_id: uuid.UUID, body: dict) -> dict:
                 relation_type="supersedes",
             )
         )
+    for related_id in body.get("relatedMemoryIds") or []:
+        session.add(
+            MemoryRelation(
+                from_memory_id=mem.id,
+                to_memory_id=uuid.UUID(related_id),
+                relation_type="related",
+            )
+        )
     session.add(
         AuditEvent(
             event_type="memory.proposed",
@@ -213,6 +226,8 @@ def propose_memory(session: Session, persona_id: uuid.UUID, body: dict) -> dict:
         )
     )
     promoted = maybe_auto_promote(session, mem)
+    if not promoted:
+        schedule_consolidation_job(session, mem.id, mem.content_hash)
     session.flush()
     state = mem.lifecycle_state.value
     return {
@@ -235,6 +250,7 @@ def update_memory(session: Session, persona_id: uuid.UUID, body: dict) -> dict:
         mem.content_hash = _content_hash(mem.content)
     if body.get("summary") is not None:
         mem.summary = body["summary"]
+    prev_state = mem.lifecycle_state
     if body.get("lifecycleState"):
         mem.lifecycle_state = LifecycleState(body["lifecycleState"])
     if body.get("confidence") is not None:
@@ -249,6 +265,9 @@ def update_memory(session: Session, persona_id: uuid.UUID, body: dict) -> dict:
         ),
         {"id": mem.id},
     )
+    if prev_state != LifecycleState.active and mem.lifecycle_state == LifecycleState.active:
+        apply_supersedes(session, mem)
+        _schedule_embedding_job(session, mem.id, mem.content_hash)
     session.flush()
     return {"memoryId": str(mem.id), "version": mem.version}
 

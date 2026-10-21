@@ -47,6 +47,8 @@ export type SystemSnapshot = {
   memory: {
     moduleAvailable: boolean;
     moduleId: string | null;
+    primaryModuleId?: string | null;
+    connectedModules?: number;
   };
   character: {
     activeCharacterId: string | null;
