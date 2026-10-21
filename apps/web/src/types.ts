@@ -53,6 +53,11 @@ export type SystemSnapshot = {
     primaryModuleId?: string | null;
     connectedModules?: number;
   };
+  discord?: {
+    moduleAvailable: boolean;
+    moduleId: string | null;
+    enabled: boolean;
+  };
   recentEvents: {
     id: string;
     timestamp: string;

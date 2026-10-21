@@ -23,6 +23,10 @@ import { MemoryCurator } from "./memory/memory-curator.js";
 import { EpisodeCompactor } from "./memory/episode-compactor.js";
 import { registerMemoryRoutes } from "./routes/memory.js";
 import { MemoryTransferService } from "./memory/memory-transfer-service.js";
+import { DiscordSettingsStore } from "./discord/settings-store.js";
+import { DiscordModuleService } from "./discord/discord-module-service.js";
+import { DiscordOrchestrator } from "./discord/discord-orchestrator.js";
+import { registerDiscordRoutes } from "./routes/discord.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -54,6 +58,9 @@ export async function buildServer(config: AppConfig) {
   let llmBackend!: LlmBackend;
   let memoryService!: MemoryModuleService;
   let syncingPersonaFromLlm = false;
+  const discordStore = new DiscordSettingsStore();
+  let discordService!: DiscordModuleService;
+  let syncDiscordConfig!: () => Promise<void>;
 
   function buildSnapshot(): SystemSnapshot {
     return {
@@ -71,6 +78,11 @@ export async function buildServer(config: AppConfig) {
         moduleId: memoryService?.isAvailable() ? memoryService.getModuleId() : null,
         primaryModuleId: memoryCfg.primaryModuleId ?? null,
         connectedModules: registry.listModulesWithCapability("memory.health.get").length,
+      },
+      discord: {
+        moduleAvailable: discordService?.isAvailable() ?? false,
+        moduleId: discordService?.isAvailable() ? discordService.getModuleId() : null,
+        enabled: discordStore.load().enabled,
       },
       character: {
         activeCharacterId: persona.activeCharacterId,
@@ -114,7 +126,9 @@ export async function buildServer(config: AppConfig) {
   const registry = new ModuleRegistry({
     heartbeatIntervalMs: config.modules.heartbeatIntervalMs,
     heartbeatTimeoutMs: config.modules.heartbeatTimeoutMs,
-    onChange: () => publishSnapshot(),
+    onChange: () => {
+      publishSnapshot();
+    },
   });
 
   const app = Fastify({
@@ -138,6 +152,9 @@ export async function buildServer(config: AppConfig) {
     () => publishSnapshot(),
     () => {
       void syncPersonaFromLlmModule();
+    },
+    () => {
+      void syncDiscordConfig?.();
     },
   );
 
@@ -212,6 +229,50 @@ export async function buildServer(config: AppConfig) {
     episodeCompactor,
   );
 
+  discordService = new DiscordModuleService(
+    registry,
+    moduleGateway,
+    config.cognition.moduleRequestTimeoutMs,
+  );
+  const discordOrchestrator = new DiscordOrchestrator(
+    discordStore,
+    discordService,
+    engine,
+    characterStore,
+    llmBackend,
+    eventLog,
+    20_000,
+  );
+  let discordConfigPushInFlight: Promise<void> | null = null;
+  let lastDiscordConfigPushFp: string | null = null;
+
+  syncDiscordConfig = async () => {
+    if (!discordService.isAvailable()) return;
+    const saved = discordStore.load();
+    if (!saved.enabled || !saved.botToken) return;
+
+    const { discordConnectionFingerprint } = await import("@echo/discord-contract");
+    const fp = discordConnectionFingerprint(saved);
+    if (fp === lastDiscordConfigPushFp) return;
+    if (discordConfigPushInFlight) return discordConfigPushInFlight;
+
+    discordConfigPushInFlight = (async () => {
+      try {
+        await discordService.applyConfig(saved);
+        lastDiscordConfigPushFp = fp;
+      } catch (err) {
+        eventLog.append({
+          type: "discord.warn",
+          summary: `Discord config sync failed: ${err instanceof Error ? err.message : "unknown"}`,
+        });
+      } finally {
+        discordConfigPushInFlight = null;
+      }
+    })();
+
+    return discordConfigPushInFlight;
+  };
+
   await registerLlmRoutes(app, llmBackend);
 
   if (llmBackend.adapter === "embedded") {
@@ -219,6 +280,16 @@ export async function buildServer(config: AppConfig) {
   }
   await registerChatRoutes(app, engine);
   await registerMemoryRoutes(app, memoryService, memoryTransfer, characterStore);
+  registerDiscordRoutes(app, {
+    store: discordStore,
+    discord: discordService,
+    orchestrator: discordOrchestrator,
+    moduleAuthToken: config.controller.moduleAuthToken,
+    onConfigPushed: (fp) => {
+      lastDiscordConfigPushFp = fp;
+    },
+  });
+
   await registerCharacterRoutes(app, characterStore, () => {
     syncPersonaFromActiveCharacter();
     eventLog.append({

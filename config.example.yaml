@@ -62,6 +62,8 @@ memoryModule:
   embeddingEnabled: true
   consolidationEnabled: true
 
+# Discord bot settings are managed in the dashboard (Discord tab) → data/discord/settings.json
+
 logging:
   level: info
   pretty: true

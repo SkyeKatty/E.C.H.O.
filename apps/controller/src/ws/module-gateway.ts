@@ -45,6 +45,7 @@ export class ModuleGateway {
     private readonly log: FastifyBaseLogger,
     private readonly onRegistryChange: () => void,
     private readonly onLlmModuleAvailabilityChange?: () => void,
+    private readonly onDiscordModuleRegistered?: () => void,
   ) {}
 
   private static moduleProvidesLlm(capabilities: { id: string }[]): boolean {
@@ -225,6 +226,9 @@ export class ModuleGateway {
     this.onRegistryChange();
     if (ModuleGateway.moduleProvidesLlm(reg.capabilities)) {
       this.onLlmModuleAvailabilityChange?.();
+    }
+    if (reg.metadata && (reg.metadata as { role?: string }).role === "discord") {
+      this.onDiscordModuleRegistered?.();
     }
   }
 

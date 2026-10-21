@@ -4,9 +4,10 @@ import { ChatPanel } from "./components/ChatPanel";
 import { LlmSettingsPanel } from "./components/LlmSettingsPanel";
 import { CharactersPanel } from "./components/CharactersPanel";
 import { MemoryPanel } from "./components/MemoryPanel";
+import { DiscordPanel } from "./components/DiscordPanel";
 import type { ModuleRecord } from "./types";
 
-type AppView = "dashboard" | "characters" | "memory";
+type AppView = "dashboard" | "characters" | "memory" | "discord";
 
 function stateBadge(state: string): string {
   switch (state) {
@@ -89,6 +90,7 @@ export function App() {
   const modules = snapshot?.modules.modules ?? [];
   const llmAvailable = snapshot?.llm.moduleAvailable ?? false;
   const memoryAvailable = snapshot?.memory.moduleAvailable ?? false;
+  const discordAvailable = snapshot?.discord?.moduleAvailable ?? false;
   const activeCharacterId = snapshot?.character.activeCharacterId ?? persona?.activeCharacterId ?? null;
 
   return (
@@ -111,6 +113,9 @@ export function App() {
           <button type="button" className={`nav-item nav-btn ${view === "memory" ? "active" : ""}`} onClick={() => setView("memory")}>
             Memory
           </button>
+          <button type="button" className={`nav-item nav-btn ${view === "discord" ? "active" : ""}`} onClick={() => setView("discord")}>
+            Discord
+          </button>
         </nav>
         <footer className="sidebar-foot">
           <span className={`conn-dot conn-${connection}`} />
@@ -122,14 +127,22 @@ export function App() {
         <header className="topbar">
           <div>
             <h1>
-              {view === "characters" ? "Character cards" : view === "memory" ? "Persistent memory" : "System overview"}
+              {view === "characters"
+                ? "Character cards"
+                : view === "memory"
+                  ? "Persistent memory"
+                  : view === "discord"
+                    ? "Discord integration"
+                    : "System overview"}
             </h1>
             <p className="muted">
               {view === "characters"
                 ? "Personas for the LLM — one active character at a time"
                 : view === "memory"
                   ? "Inspect, search, and delete stored memories for the active character"
-                  : "Live status from the central controller"}
+                  : view === "discord"
+                    ? "Bot token, channels, batching, and voice policies"
+                    : "Live status from the central controller"}
             </p>
           </div>
           {snapshot && (
@@ -147,6 +160,8 @@ export function App() {
         {view === "memory" && (
           <MemoryPanel memoryAvailable={memoryAvailable} activeCharacterId={activeCharacterId} />
         )}
+
+        {view === "discord" && <DiscordPanel moduleAvailable={discordAvailable} />}
 
         {view === "dashboard" && (
           <>

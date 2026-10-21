@@ -50,6 +50,11 @@ export type SystemSnapshot = {
     primaryModuleId?: string | null;
     connectedModules?: number;
   };
+  discord?: {
+    moduleAvailable: boolean;
+    moduleId: string | null;
+    enabled: boolean;
+  };
   character: {
     activeCharacterId: string | null;
     activeCharacterName: string | null;

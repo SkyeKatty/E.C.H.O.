@@ -13,6 +13,7 @@ import type { MemoryModuleService } from "../memory/memory-module-service.js";
 import type { MemoryCurator } from "../memory/memory-curator.js";
 import type { EpisodeCompactor } from "../memory/episode-compactor.js";
 import type { ParticipantRef } from "../memory/participant.js";
+import { formatAssistantTurnMessages, formatLlmOutput } from "../llm/output-format.js";
 
 export type CognitiveEngineConfig = {
   maxToolIterations: number;
@@ -250,7 +251,7 @@ export class CognitiveEngine {
         stream: input.stream ?? true,
         signal: abort.signal,
         onStream: (ev) => {
-          if (ev.type === "text-delta") input.onStream?.(ev.delta);
+          if (ev.type === "text-delta") input.onStream?.(formatLlmOutput(ev.delta));
         },
         options: {
           provider,
@@ -267,9 +268,10 @@ export class CognitiveEngine {
         },
       });
 
-      this.sessions.append(session.id, { role: "user", content: input.message }, ...result.newMessages);
+      const storedTurn = formatAssistantTurnMessages(result.newMessages);
+      this.sessions.append(session.id, { role: "user", content: input.message }, ...storedTurn);
 
-      const reply = result.assistantMessage.content ?? "";
+      const reply = formatLlmOutput(result.assistantMessage.content ?? "");
 
       if (memoryAvailable) {
         try {

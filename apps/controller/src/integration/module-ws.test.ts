@@ -6,6 +6,7 @@ import {
   createEnvelope,
   type ModuleRegisteredPayload,
 } from "@echo/protocol";
+import { loadConfig } from "../config.js";
 import { buildServer } from "../server.js";
 import type { FastifyInstance } from "fastify";
 
@@ -14,33 +15,18 @@ describe("module WebSocket integration", () => {
   let port: number;
 
   beforeAll(async () => {
+    const base = loadConfig();
     const built = await buildServer({
+      ...base,
       controller: {
+        ...base.controller,
         id: "test-controller",
         host: "127.0.0.1",
         port: 0,
-        moduleWsPath: "/ws/modules",
-        dashboardWsPath: "/ws/dashboard",
       },
-      persona: { name: "Test", reactiveOnly: true },
-      cognition: {
-        llmAdapter: "module",
-        defaultProvider: "local-gpu",
-        maxToolIterations: 6,
-        requestTimeoutMs: 120_000,
-        moduleRequestTimeoutMs: 30_000,
-      },
-      providers: [
-        {
-          id: "local-gpu",
-          type: "openai_compatible",
-          baseUrl: "http://127.0.0.1:11434/v1",
-          model: "test-model",
-        },
-      ],
+      persona: { ...base.persona, name: "Test", reactiveOnly: true },
+      cognition: { ...base.cognition, llmAdapter: "module", defaultProvider: "local-gpu" },
       logging: { level: "fatal", pretty: false },
-      modules: { heartbeatIntervalMs: 15_000, heartbeatTimeoutMs: 45_000 },
-      memory: {},
     });
     app = built.app;
     await app.listen({ host: "127.0.0.1", port: 0 });
