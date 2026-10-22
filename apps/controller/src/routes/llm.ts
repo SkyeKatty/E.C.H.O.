@@ -3,8 +3,21 @@ import { providerCategory } from "@echo/llm";
 import { z } from "zod";
 import type { LlmBackend } from "../llm/llm-backend.js";
 
+const taskBindingSchema = z.object({
+  providerId: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+});
+
 const updateSchema = z.object({
   activeProviderId: z.string().optional(),
+  tasks: z
+    .object({
+      chat: taskBindingSchema.optional(),
+      discord_gate: taskBindingSchema.optional(),
+      episode_summary: taskBindingSchema.optional(),
+      memory_extract: taskBindingSchema.optional(),
+    })
+    .optional(),
   profile: z
     .object({
       id: z.string(),

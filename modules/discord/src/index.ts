@@ -1,3 +1,4 @@
+import "./voice-deps.js";
 import os from "node:os";
 import { ModuleClient } from "@echo/module-sdk";
 import { DISCORD_CAPABILITIES } from "@echo/discord-contract";
@@ -47,11 +48,13 @@ client.registerHandler(DISCORD_CAPABILITIES.CONFIG_APPLY, (_env, params) => runt
 
 client.registerHandler(DISCORD_CAPABILITIES.CONFIG_STATUS, () => runtime.getStatus());
 
+client.registerHandler(DISCORD_CAPABILITIES.CHANNELS_LIST, async () => runtime.listChannels());
+
 client.registerHandler(DISCORD_CAPABILITIES.MESSAGE_SEND, (_env, params) => runtime.sendMessage(params));
 
-client.registerHandler(DISCORD_CAPABILITIES.VOICE_JOIN, (_env, params) => runtime.joinVoice(params));
+client.registerHandler(DISCORD_CAPABILITIES.VOICE_JOIN, async (_env, params) => runtime.joinVoice(params));
 
-client.registerHandler(DISCORD_CAPABILITIES.VOICE_LEAVE, (_env, params) => runtime.leaveVoice(params));
+client.registerHandler(DISCORD_CAPABILITIES.VOICE_LEAVE, async (_env, params) => runtime.leaveVoice(params));
 
 client.registerHandler(DISCORD_CAPABILITIES.VOICE_STATUS, () => runtime.voiceStatus());
 

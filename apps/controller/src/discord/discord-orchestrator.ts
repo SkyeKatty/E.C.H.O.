@@ -106,6 +106,14 @@ export class DiscordOrchestrator {
           referencedBot: msg.referencedBotMessage,
         },
         this.gateTimeoutMs,
+        {
+          onError: (message) => {
+            this.eventLog.append({
+              type: "discord.warn",
+              summary: `Relevance gate LLM failed: ${message}`,
+            });
+          },
+        },
       );
       shouldRespond = gate.shouldRespond;
       gateReason = gate.reason;

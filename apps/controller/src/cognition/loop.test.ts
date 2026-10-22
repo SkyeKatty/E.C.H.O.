@@ -56,4 +56,58 @@ describe("runCognitiveLoop", () => {
     expect(invoked).toHaveLength(1);
     expect(result.assistantMessage.content).toBe("Tool said pong");
   });
+
+  it("finishes tool follow-up after chat cancel during tool execution", async () => {
+    const provider = new MockLLMProvider();
+    provider.queue({
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "mock_echo", arguments: "{}" },
+          },
+        ],
+      },
+      finishReason: "tool_calls",
+    });
+    provider.queue({
+      message: { role: "assistant", content: "Joined voice" },
+      finishReason: "stop",
+    });
+
+    const abort = new AbortController();
+    const tools: ToolDefinition[] = [
+      {
+        type: "function",
+        function: {
+          name: "mock_echo",
+          description: "echo",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ];
+
+    const loopPromise = runCognitiveLoop({
+      messages: [{ role: "user", content: "join" }],
+      stream: false,
+      signal: abort.signal,
+      options: {
+        provider,
+        tools,
+        maxIterations: 4,
+        requestTimeoutMs: 5000,
+        resolveCapabilityId: () => "mock.echo",
+        invokeModule: async () => {
+          abort.abort();
+          return { joined: true };
+        },
+      },
+    });
+
+    const result = await loopPromise;
+    expect(result.assistantMessage.content).toBe("Joined voice");
+  });
 });

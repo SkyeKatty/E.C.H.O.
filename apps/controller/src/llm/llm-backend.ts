@@ -1,4 +1,4 @@
-import type { LLMProvider, LlmRuntimeSettings } from "@echo/llm";
+import type { LLMProvider, LlmRuntimeSettings, LlmTask } from "@echo/llm";
 
 export type LlmSettingsResponse = {
   settings: LlmRuntimeSettings;
@@ -13,6 +13,7 @@ export interface LlmBackend {
   updateSettings(params: {
     activeProviderId?: string;
     providers?: LlmRuntimeSettings["providers"];
+    tasks?: LlmRuntimeSettings["tasks"];
     profile?: {
       id: string;
       model?: string;
@@ -34,5 +35,7 @@ export interface LlmBackend {
     }[]
   >;
   getActiveProviderId(): Promise<string>;
+  /** @deprecated Use createProviderForTask("chat"). */
   createActiveProvider(): Promise<LLMProvider>;
+  createProviderForTask(task: LlmTask): Promise<LLMProvider>;
 }

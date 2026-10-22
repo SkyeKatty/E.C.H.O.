@@ -65,6 +65,41 @@ export const discordInboundBatchSchema = z.object({
   messages: z.array(discordInboundMessageSchema).min(1).max(50),
 });
 
+const voiceChannelRefFields = {
+  channelId: z.string().min(1).optional(),
+  channelName: z.string().min(1).optional(),
+  guildId: z.string().min(1).optional(),
+};
+
+/** Voice join — channelId or channelName required. */
+export const discordVoiceJoinRefSchema = z
+  .object(voiceChannelRefFields)
+  .refine((d) => Boolean(d.channelId?.trim() || d.channelName?.trim()), {
+    message: "Provide channelId or channelName",
+  });
+
+/** Voice leave — all fields optional (empty = leave configured guild voice). */
+export const discordVoiceLeaveRefSchema = z.object(voiceChannelRefFields);
+
+/** @deprecated use join/leave ref schemas */
+export const discordVoiceChannelRefSchema = discordVoiceJoinRefSchema;
+
+export const discordChannelInfoSchema = z.object({
+  channelId: z.string(),
+  name: z.string(),
+  kind: z.enum(["text", "voice"]),
+  textEnabled: z.boolean(),
+  voiceEnabled: z.boolean(),
+});
+
+export const discordChannelsListSchema = z.object({
+  guildId: z.string(),
+  guildName: z.string(),
+  channels: z.array(discordChannelInfoSchema),
+});
+
+export type DiscordChannelsList = z.infer<typeof discordChannelsListSchema>;
+
 export const discordVoiceJoinSchema = z.object({
   guildId: z.string().min(1),
   channelId: z.string().min(1),

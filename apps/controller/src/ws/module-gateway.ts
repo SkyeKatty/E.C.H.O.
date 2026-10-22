@@ -13,6 +13,7 @@ import {
   safeParseEnvelope,
   type Envelope,
 } from "@echo/protocol";
+import { isDiscordSideEffectCapability } from "@echo/discord-contract";
 import type { FastifyBaseLogger } from "fastify";
 import type { ModuleRegistry } from "../registry/module-registry.js";
 import type { EventLog } from "../persona/state.js";
@@ -272,6 +273,10 @@ export class ModuleGateway {
     params: unknown,
     options?: {
       timeoutMs?: number;
+      /** When false, chat/client abort never cancels this RPC (voice join, etc.). */
+      revocable?: boolean;
+      /** Extra wait after timeoutMs before rejecting (side-effect ops only). */
+      timeoutGraceMs?: number;
       signal?: AbortSignal;
       taskId?: string;
       onChunk?: (chunk: unknown) => void;
@@ -297,6 +302,10 @@ export class ModuleGateway {
 
     this.registry.setBusy(owner.moduleId, true);
     const timeoutMs = options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    const immutable = isDiscordSideEffectCapability(capabilityId);
+    const revocable = !immutable && options?.revocable !== false;
+    const abortSignal = revocable ? options?.signal : undefined;
+    const graceMs = !revocable ? (options?.timeoutGraceMs ?? 45_000) : 0;
 
     try {
       return await new Promise<unknown>((resolve, reject) => {
@@ -310,26 +319,31 @@ export class ModuleGateway {
 
         const timer = setTimeout(() => {
           this.pendingRequests.delete(request.messageId);
-          reject(new Error(`Module request timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
+          reject(new Error(`Module request timed out after ${timeoutMs + graceMs}ms`));
+        }, timeoutMs + graceMs);
 
         const onAbort = () => {
+          if (immutable) return;
           clearTimeout(timer);
           this.pendingRequests.delete(request.messageId);
           this.sendCancelToModule(owner.moduleId, request.messageId, options?.taskId);
           reject(new DOMException("Aborted", "AbortError"));
         };
-        options?.signal?.addEventListener("abort", onAbort, { once: true });
+        if (abortSignal && !abortSignal.aborted) {
+          abortSignal.addEventListener("abort", onAbort, { once: true });
+        } else if (abortSignal?.aborted) {
+          onAbort();
+        }
 
         this.pendingRequests.set(request.messageId, {
           resolve: (value) => {
             clearTimeout(timer);
-            options?.signal?.removeEventListener("abort", onAbort);
+            abortSignal?.removeEventListener("abort", onAbort);
             resolve(value);
           },
           reject: (error) => {
             clearTimeout(timer);
-            options?.signal?.removeEventListener("abort", onAbort);
+            abortSignal?.removeEventListener("abort", onAbort);
             reject(error);
           },
           timer,

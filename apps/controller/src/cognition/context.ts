@@ -10,6 +10,7 @@ export function assembleChatMessages(input: {
   history: ChatMessage[];
   userMessage: string;
   memoryInjection?: string;
+  discordInjection?: string;
   historyLimit?: number;
 }): ChatMessage[] {
   let system = buildCharacterSystemPrompt({
@@ -17,6 +18,10 @@ export function assembleChatMessages(input: {
     state: input.state,
     policy: input.policy,
   });
+
+  if (input.discordInjection?.trim()) {
+    system = `${system}\n\n${input.discordInjection.trim()}`;
+  }
 
   if (input.memoryInjection?.trim()) {
     system = `${system}\n\n${input.memoryInjection.trim()}`;

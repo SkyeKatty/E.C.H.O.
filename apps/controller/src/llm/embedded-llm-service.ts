@@ -1,8 +1,11 @@
 import {
   LlmRuntime,
   llmRuntimeSettingsSchema,
+  ModelOverrideProvider,
   providerCategory,
+  resolveTaskBinding,
   type LLMProvider,
+  type LlmTask,
 } from "@echo/llm";
 import type { LlmBackend, LlmSettingsResponse } from "./llm-backend.js";
 
@@ -40,6 +43,12 @@ export class EmbeddedLlmService implements LlmBackend {
 
     if (params.activeProviderId) {
       next = this.runtime.updateSettings({ activeProviderId: params.activeProviderId });
+    }
+
+    if (params.tasks) {
+      next = this.runtime.updateSettings({
+        tasks: { ...next.tasks, ...params.tasks },
+      });
     }
 
     if (params.profile) {
@@ -94,7 +103,15 @@ export class EmbeddedLlmService implements LlmBackend {
     return settings.activeProviderId;
   }
 
-  async createActiveProvider(): Promise<LLMProvider> {
-    return this.runtime.getActiveProvider();
+  createActiveProvider(): Promise<LLMProvider> {
+    return this.createProviderForTask("chat");
+  }
+
+  async createProviderForTask(task: LlmTask): Promise<LLMProvider> {
+    const settings = this.runtime.getSettings();
+    const binding = resolveTaskBinding(settings, task);
+    const base = this.runtime.getProvider(binding.providerId);
+    if (binding.model === binding.profile.model) return base;
+    return new ModelOverrideProvider(base, binding.model);
   }
 }

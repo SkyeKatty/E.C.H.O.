@@ -9,11 +9,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@discordjs/voice": "^0.18.0",
+    "@discordjs/voice": "^0.19.2",
     "@echo/discord-contract": "workspace:*",
     "@echo/module-sdk": "workspace:*",
     "@echo/protocol": "workspace:*",
     "discord.js": "^14.16.3",
+    "libsodium-wrappers": "^0.8.4",
     "zod": "^3.24.1"
   },
   "devDependencies": {

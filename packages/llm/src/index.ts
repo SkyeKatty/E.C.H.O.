@@ -16,3 +16,5 @@ export { createOpenRouterProvider } from "./providers/openrouter.js";
 export { createOpenAICompatibleProvider } from "./providers/openai-compatible.js";
 export { MockLLMProvider } from "./mock-provider.js";
 export { LlmRuntime } from "./runtime.js";
+export * from "./tasks.js";
+export { ModelOverrideProvider } from "./model-override-provider.js";

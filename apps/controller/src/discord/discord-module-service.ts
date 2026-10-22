@@ -1,4 +1,4 @@
-import { DISCORD_CAPABILITIES } from "@echo/discord-contract";
+import { DISCORD_CAPABILITIES, type DiscordChannelsList } from "@echo/discord-contract";
 import type { ModuleRegistry } from "../registry/module-registry.js";
 import type { ModuleGateway } from "../ws/module-gateway.js";
 
@@ -47,6 +47,7 @@ export class DiscordModuleService {
     capabilityId: string,
     params: unknown,
     timeoutMs: number,
+    revocable = true,
   ): Promise<unknown> {
     if (!this.isAvailable()) {
       throw new Error("Discord module is not connected");
@@ -54,12 +55,24 @@ export class DiscordModuleService {
     const result = await this.gateway.invokeCapability(capabilityId, params, {
       timeoutMs,
       moduleId: this.getModuleId() ?? undefined,
+      revocable,
+      timeoutGraceMs: revocable ? undefined : 45_000,
     });
     return result;
   }
 
+  /** Tool / side-effect calls: never cancelled by chat abort; long timeout + grace. */
+  async invokeSideEffect<T>(capabilityId: string, params: unknown): Promise<T> {
+    const timeoutMs = Math.max(this.timeoutMs, 120_000);
+    return (await this.invokeWithTimeout(capabilityId, params, timeoutMs, false)) as T;
+  }
+
   async getStatus(): Promise<unknown> {
     return this.invoke(DISCORD_CAPABILITIES.CONFIG_STATUS, {});
+  }
+
+  async listChannels(): Promise<DiscordChannelsList> {
+    return this.invokeSideEffect<DiscordChannelsList>(DISCORD_CAPABILITIES.CHANNELS_LIST, {});
   }
 
   async sendMessage(params: {

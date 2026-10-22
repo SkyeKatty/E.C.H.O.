@@ -25,11 +25,20 @@ export class ModuleLlmProvider implements LLMProvider {
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResult> {
-    const result = await this.gateway.invokeCapability(
-      LLM_COMPLETE,
-      { ...request, stream: false },
-      { timeoutMs: this.requestTimeoutMs, signal: request.signal },
-    );
+    const params = {
+      providerId: this.id,
+      model: request.model ?? this.model,
+      messages: request.messages,
+      tools: request.tools,
+      toolChoice: request.toolChoice,
+      temperature: request.temperature,
+      maxTokens: request.maxTokens,
+      providerExtras: request.providerExtras,
+      stream: false as const,
+    };
+    const result = await this.gateway.invokeCapability(LLM_COMPLETE, params, {
+      timeoutMs: this.requestTimeoutMs,
+    });
     return result as CompleteResponse;
   }
 
@@ -44,10 +53,19 @@ export class ModuleLlmProvider implements LLMProvider {
     const completion = this.gateway
       .invokeCapability(
         LLM_COMPLETE,
-        { ...request, stream: true },
+        {
+          providerId: this.id,
+          model: request.model ?? this.model,
+          messages: request.messages,
+          tools: request.tools,
+          toolChoice: request.toolChoice,
+          temperature: request.temperature,
+          maxTokens: request.maxTokens,
+          providerExtras: request.providerExtras,
+          stream: true,
+        },
         {
           timeoutMs: this.requestTimeoutMs,
-          signal: request.signal,
           onChunk: (chunk) => {
             const ev = chunk as StreamEvent;
             if (ev.type === "text-delta") push(ev);

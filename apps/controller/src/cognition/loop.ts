@@ -52,9 +52,13 @@ export async function runCognitiveLoop(input: {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.requestTimeoutMs);
-    const linked = input.signal;
-    const onAbort = () => controller.abort();
-    linked?.addEventListener("abort", onAbort);
+    // If chat was cancelled during tool execution, still run the follow-up model turn
+    // (e.g. voice join finished after Stop — persona should see tool results).
+    let onAbort: (() => void) | undefined;
+    if (input.signal && !input.signal.aborted) {
+      onAbort = () => controller.abort();
+      input.signal.addEventListener("abort", onAbort);
+    }
 
     let result;
     try {
@@ -94,7 +98,9 @@ export async function runCognitiveLoop(input: {
       }
     } finally {
       clearTimeout(timeout);
-      linked?.removeEventListener("abort", onAbort);
+      if (onAbort && input.signal) {
+        input.signal.removeEventListener("abort", onAbort);
+      }
     }
 
     lastModel = result.model;
@@ -127,7 +133,7 @@ export async function runCognitiveLoop(input: {
       let ok = true;
       try {
         const args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-        const toolResult = await options.invokeModule(capabilityId, args, { signal: input.signal });
+        const toolResult = await options.invokeModule(capabilityId, args);
         toolContent = JSON.stringify(toolResult);
       } catch (err) {
         ok = false;

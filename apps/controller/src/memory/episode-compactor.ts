@@ -76,7 +76,7 @@ export class EpisodeCompactor {
       })
       .join("\n");
 
-    const provider = await this.llm.createActiveProvider();
+    const provider = await this.llm.createProviderForTask("episode_summary");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
 
