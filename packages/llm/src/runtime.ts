@@ -51,11 +51,26 @@ export class LlmRuntime {
     return this.registry.getActive();
   }
 
+  getProvider(id: string) {
+    const p = this.registry.get(id);
+    if (!p) throw new Error(`LLM provider "${id}" is not loaded`);
+    return p;
+  }
+
+  private providerForRequest(request: CompletionRequest) {
+    const id = request.providerId?.trim();
+    if (id) {
+      const p = this.registry.get(id);
+      if (p) return p;
+    }
+    return this.registry.getActive();
+  }
+
   async complete(request: CompletionRequest) {
-    return this.registry.getActive().complete(request);
+    return this.providerForRequest(request).complete(request);
   }
 
   async *stream(request: CompletionRequest) {
-    yield* this.registry.getActive().stream(request);
+    yield* this.providerForRequest(request).stream(request);
   }
 }

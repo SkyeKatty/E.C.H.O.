@@ -36,11 +36,15 @@ type OpenAIChatResponse = {
     message?: {
       role?: string;
       content?: string | null;
+      reasoning?: string | null;
+      reasoning_content?: string | null;
       tool_calls?: ToolCall[];
     };
     delta?: {
       role?: string;
       content?: string | null;
+      reasoning?: string | null;
+      reasoning_content?: string | null;
       tool_calls?: Array<{
         index?: number;
         id?: string;
@@ -76,6 +80,9 @@ function buildBody(request: CompletionRequest, model: string, stream: boolean, d
   if (defaults.capabilities.toolCalling && request.tools?.length) {
     body.tools = request.tools;
     body.tool_choice = request.toolChoice ?? "auto";
+  }
+  if (request.providerExtras) {
+    Object.assign(body, request.providerExtras);
   }
   return body;
 }
@@ -119,9 +126,11 @@ function mapUsage(usage?: OpenAIChatResponse["usage"]): CompletionUsage | undefi
 }
 
 function mapAssistantMessage(msg: NonNullable<OpenAIChatResponse["choices"]>[0]["message"]): ChatMessage {
+  const reasoning = msg?.reasoning ?? msg?.reasoning_content ?? null;
   return {
     role: "assistant",
     content: msg?.content ?? null,
+    reasoning: reasoning?.trim() ? reasoning : null,
     tool_calls: msg?.tool_calls,
   };
 }

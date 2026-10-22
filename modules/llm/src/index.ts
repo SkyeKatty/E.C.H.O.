@@ -17,6 +17,8 @@ console.log(
 );
 
 const completionRequestSchema = z.object({
+  providerId: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
   messages: z.array(
     z.object({
       role: z.enum(["system", "user", "assistant", "tool"]),
@@ -30,6 +32,7 @@ const completionRequestSchema = z.object({
   toolChoice: z.unknown().optional(),
   temperature: z.number().optional(),
   maxTokens: z.number().optional(),
+  providerExtras: z.record(z.unknown()).optional(),
   stream: z.boolean().optional(),
 });
 
@@ -117,6 +120,18 @@ client.registerHandler("llm.settings.update", (_env, params) => {
           label: z.string().optional(),
         })
         .optional(),
+      tasks: z
+        .object({
+          chat: z.object({ providerId: z.string().optional(), model: z.string().optional() }).optional(),
+          discord_gate: z.object({ providerId: z.string().optional(), model: z.string().optional() }).optional(),
+          episode_summary: z
+            .object({ providerId: z.string().optional(), model: z.string().optional() })
+            .optional(),
+          memory_extract: z
+            .object({ providerId: z.string().optional(), model: z.string().optional() })
+            .optional(),
+        })
+        .optional(),
     })
     .parse(params ?? {});
 
@@ -128,6 +143,12 @@ client.registerHandler("llm.settings.update", (_env, params) => {
 
   if (body.activeProviderId) {
     next = runtime.updateSettings({ activeProviderId: body.activeProviderId });
+  }
+
+  if (body.tasks) {
+    next = runtime.updateSettings({
+      tasks: { ...next.tasks, ...body.tasks },
+    });
   }
 
   if (body.profile) {
@@ -154,11 +175,14 @@ client.registerHandler("llm.settings.update", (_env, params) => {
 client.registerHandler("llm.complete", async (_env, params, ctx) => {
   const parsed = completionRequestSchema.parse(params ?? {});
   const request = {
+    providerId: parsed.providerId,
+    model: parsed.model,
     messages: parsed.messages,
     tools: parsed.tools,
     toolChoice: parsed.toolChoice,
     temperature: parsed.temperature,
     maxTokens: parsed.maxTokens,
+    providerExtras: parsed.providerExtras,
     signal: ctx?.signal,
   } as import("@echo/llm").CompletionRequest;
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ProviderConfig } from "./types.js";
+import { llmTaskBindingsSchema } from "./tasks.js";
 
 export const providerKindSchema = z.enum(["openrouter", "openai_compatible"]);
 export type ProviderKind = z.infer<typeof providerKindSchema>;
@@ -37,6 +38,8 @@ export type ProviderProfile = z.infer<typeof providerProfileSchema>;
 export const llmRuntimeSettingsSchema = z.object({
   activeProviderId: z.string().min(1),
   providers: z.array(providerProfileSchema).min(1),
+  /** Optional per-task provider/model overrides (OpenRouter slugs, etc.). */
+  tasks: llmTaskBindingsSchema.default({}),
 });
 
 export type LlmRuntimeSettings = z.infer<typeof llmRuntimeSettingsSchema>;
@@ -83,6 +86,7 @@ export function profileToProviderConfig(profile: ProviderProfile): ProviderConfi
 export function defaultRuntimeSettings(): LlmRuntimeSettings {
   return llmRuntimeSettingsSchema.parse({
     activeProviderId: "openrouter",
+    tasks: {},
     providers: [
       {
         id: "openrouter",

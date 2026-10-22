@@ -13,10 +13,20 @@ type ProviderProfile = {
   generation: { temperature: number; maxTokens: number };
 };
 
+type TaskBinding = {
+  providerId?: string;
+  model?: string;
+};
+
+type TaskKey = "chat" | "discord_gate" | "episode_summary" | "memory_extract";
+
+type TaskBindings = Partial<Record<TaskKey, TaskBinding>>;
+
 type SettingsResponse = {
   settings: {
     activeProviderId: string;
     providers: ProviderProfile[];
+    tasks?: TaskBindings;
   };
   loadErrors: string[];
 };
@@ -27,10 +37,36 @@ const categoryLabel: Record<ProviderCategory, string> = {
   remote_api: "Remote API",
 };
 
+const TASK_ROWS: { key: TaskKey; label: string; hint: string }[] = [
+  {
+    key: "chat",
+    label: "Main chat & Discord replies",
+    hint: "Primary persona responses (tools + streaming).",
+  },
+  {
+    key: "discord_gate",
+    label: "Discord relevance gate",
+    hint: "Small JSON decision per message; use a fast/cheap model.",
+  },
+  {
+    key: "episode_summary",
+    label: "Episode summarization",
+    hint: "Rolling compaction of old channel/chat history.",
+  },
+  {
+    key: "memory_extract",
+    label: "Memory extraction",
+    hint: "Structured facts after each chat turn.",
+  },
+];
+
+const emptyTasks = (): TaskBindings => ({});
+
 export function LlmSettingsPanel(props: { moduleAvailable: boolean }) {
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [draft, setDraft] = useState<ProviderProfile | null>(null);
+  const [tasks, setTasks] = useState<TaskBindings>(emptyTasks());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -49,6 +85,7 @@ export function LlmSettingsPanel(props: { moduleAvailable: boolean }) {
       setSelectedId(active);
       const profile = data.settings.providers.find((p) => p.id === active) ?? data.settings.providers[0];
       setDraft(profile ? { ...profile } : null);
+      setTasks({ ...emptyTasks(), ...(data.settings.tasks ?? {}) });
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load settings");
@@ -65,6 +102,24 @@ export function LlmSettingsPanel(props: { moduleAvailable: boolean }) {
     if (profile) setDraft({ ...profile });
   }, [selectedId, settings]);
 
+  function setTaskField(key: TaskKey, field: keyof TaskBinding, value: string) {
+    setTasks((prev) => {
+      const row = { ...prev[key] };
+      if (value.trim()) {
+        row[field] = value.trim();
+      } else {
+        delete row[field];
+      }
+      const next = { ...prev };
+      if (Object.keys(row).length === 0) {
+        delete next[key];
+      } else {
+        next[key] = row;
+      }
+      return next;
+    });
+  }
+
   async function applySettings() {
     if (!draft) return;
     setSaving(true);
@@ -76,6 +131,7 @@ export function LlmSettingsPanel(props: { moduleAvailable: boolean }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           activeProviderId: selectedId,
+          tasks,
           profile: {
             id: draft.id,
             model: draft.model,
@@ -90,6 +146,7 @@ export function LlmSettingsPanel(props: { moduleAvailable: boolean }) {
       }
       const data = (await res.json()) as SettingsResponse;
       setSettings(data);
+      setTasks({ ...emptyTasks(), ...(data.settings.tasks ?? {}) });
       setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
@@ -110,6 +167,8 @@ export function LlmSettingsPanel(props: { moduleAvailable: boolean }) {
     );
   }
 
+  const providers = settings?.settings.providers.filter((p) => p.enabled) ?? [];
+
   return (
     <section className="panel llm-settings">
       <div className="panel-head">
@@ -128,7 +187,7 @@ export function LlmSettingsPanel(props: { moduleAvailable: boolean }) {
       {draft && (
         <div className="llm-form">
           <label className="field">
-            <span>Provider</span>
+            <span>Active provider (default credentials)</span>
             <select
               className="chat-select"
               value={selectedId}
@@ -147,7 +206,7 @@ export function LlmSettingsPanel(props: { moduleAvailable: boolean }) {
           </p>
 
           <label className="field">
-            <span>Model</span>
+            <span>Default model (when a task has no override)</span>
             <input
               className="text-input mono"
               value={draft.model}
@@ -185,7 +244,7 @@ export function LlmSettingsPanel(props: { moduleAvailable: boolean }) {
               />
             </label>
             <label className="field">
-              <span>Max tokens</span>
+              <span>Max tokens (chat default)</span>
               <input
                 type="number"
                 className="text-input mono"
@@ -201,6 +260,52 @@ export function LlmSettingsPanel(props: { moduleAvailable: boolean }) {
               />
             </label>
           </div>
+
+          <h3>Per-task models</h3>
+          <p className="muted chat-hint">
+            Optional OpenRouter (or provider) model per job. Leave blank to use the active provider&apos;s default
+            model above. Pick another provider when a task should use different API credentials.
+          </p>
+
+          <ul className="llm-task-list">
+            {TASK_ROWS.map((row) => {
+              const binding = tasks[row.key] ?? {};
+              return (
+                <li key={row.key} className="llm-task-row">
+                  <div className="llm-task-head">
+                    <strong>{row.label}</strong>
+                    <span className="muted">{row.hint}</span>
+                  </div>
+                  <div className="form-grid">
+                    <label>
+                      Provider
+                      <select
+                        className="chat-select"
+                        value={binding.providerId ?? ""}
+                        onChange={(e) => setTaskField(row.key, "providerId", e.target.value)}
+                      >
+                        <option value="">Active provider</option>
+                        {providers.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Model override
+                      <input
+                        className="text-input mono"
+                        placeholder="e.g. deepseek/deepseek-chat"
+                        value={binding.model ?? ""}
+                        onChange={(e) => setTaskField(row.key, "model", e.target.value)}
+                      />
+                    </label>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
 
           {draft.category === "openrouter" && (
             <p className="muted chat-hint">

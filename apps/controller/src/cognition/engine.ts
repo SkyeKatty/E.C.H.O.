@@ -8,7 +8,13 @@ import type { EventLog } from "../persona/state.js";
 import { assembleChatMessages } from "./context.js";
 import { runCognitiveLoop, type CognitiveTraceEvent } from "./loop.js";
 import { SessionStore } from "./session-store.js";
-import { buildToolRouting } from "./tools.js";
+import {
+  buildToolRouting,
+  isDiscordCapabilityId,
+  normalizeDiscordCapabilityId,
+  resolveToolCapabilityId,
+} from "./tools.js";
+import type { DiscordModuleService } from "../discord/discord-module-service.js";
 import type { MemoryModuleService } from "../memory/memory-module-service.js";
 import type { MemoryCurator } from "../memory/memory-curator.js";
 import type { EpisodeCompactor } from "../memory/episode-compactor.js";
@@ -19,17 +25,23 @@ export type CognitiveEngineConfig = {
   maxToolIterations: number;
   requestTimeoutMs: number;
   moduleRequestTimeoutMs: number;
+  /** Discord channel names/ids appended to the system prompt when available. */
+  fetchDiscordPromptContext?: () => Promise<string | undefined>;
   /** Recent messages passed verbatim to the LLM when memory module is active. */
   promptHistoryMessages?: number;
   memoryRetrievalTokenBudget?: number;
   memoryRetrievalMaxItems?: number;
   /** Max messages loaded from Postgres when hydrating an empty in-memory session. */
   sessionHydrationLimit?: number;
+  /** Discord tool RPCs (voice join, etc.) — not cancelled when chat stops. */
+  discordModule?: DiscordModuleService | null;
 };
 
 export class CognitiveEngine {
   private readonly sessions = new SessionStore();
   private activeTasks = new Map<string, AbortController>();
+  /** One turn at a time per session — later messages wait (voice join must finish). */
+  private readonly sessionTurnTail = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly llm: LlmBackend,
@@ -131,6 +143,36 @@ export class CognitiveEngine {
       );
     }
 
+    const session = this.sessions.getOrCreate(input.sessionId);
+    const sessionKey = session.id;
+    const prev = this.sessionTurnTail.get(sessionKey) ?? Promise.resolve();
+    const turn = prev.catch(() => undefined).then(() => this.runChatTurn(input, session));
+    this.sessionTurnTail.set(sessionKey, turn);
+    return turn as ReturnType<CognitiveEngine["runChatTurn"]>;
+  }
+
+  private async runChatTurn(
+    input: {
+      message: string;
+      sessionId?: string;
+      taskId?: string;
+      speaker?: ParticipantRef;
+      stream?: boolean;
+      providerId?: string;
+      generation?: { temperature?: number; maxTokens?: number };
+      onStream?: (chunk: string) => void;
+      onTrace?: (ev: CognitiveTraceEvent) => void;
+      onStarted?: (meta: { taskId: string; sessionId: string }) => void;
+    },
+    session: ReturnType<SessionStore["getOrCreate"]>,
+  ): Promise<{
+    sessionId: string;
+    taskId: string;
+    reply: string;
+    providerId: string;
+    model: string;
+    usage?: { totalTokens?: number };
+  }> {
     if (input.providerId) {
       await this.setActiveProvider(input.providerId);
     }
@@ -146,13 +188,12 @@ export class CognitiveEngine {
       });
     }
 
-    const session = this.sessions.getOrCreate(input.sessionId);
     const taskId = input.taskId ?? crypto.randomUUID();
     const abort = new AbortController();
     this.activeTasks.set(taskId, abort);
     input.onStarted?.({ taskId, sessionId: session.id });
 
-    const provider = await this.llm.createActiveProvider();
+    const provider = await this.llm.createProviderForTask("chat");
 
     this.setPersonaState({
       activity: "thinking",
@@ -228,6 +269,15 @@ export class CognitiveEngine {
       }
     }
 
+    let discordInjection: string | undefined;
+    if (this.config.fetchDiscordPromptContext) {
+      try {
+        discordInjection = await this.config.fetchDiscordPromptContext();
+      } catch {
+        discordInjection = undefined;
+      }
+    }
+
     const messages = assembleChatMessages({
       character,
       policy: this.runtimePolicy,
@@ -236,6 +286,7 @@ export class CognitiveEngine {
       userMessage: input.speaker
         ? `[${input.speaker.displayName}] ${input.message}`
         : input.message,
+      discordInjection,
       memoryInjection,
       historyLimit: memoryAvailable ? this.config.promptHistoryMessages ?? 24 : undefined,
     });
@@ -258,12 +309,21 @@ export class CognitiveEngine {
           tools,
           maxIterations: this.config.maxToolIterations,
           requestTimeoutMs: this.config.requestTimeoutMs,
-          resolveCapabilityId: (toolName) => toolNameToCapabilityId.get(toolName) ?? toolName,
-          invokeModule: (capabilityId, params, opts) =>
-            this.moduleGateway.invokeCapability(capabilityId, params, {
-              signal: opts?.signal,
-              timeoutMs: this.config.moduleRequestTimeoutMs,
-            }),
+          resolveCapabilityId: (toolName) =>
+            resolveToolCapabilityId(toolName, toolNameToCapabilityId),
+          invokeModule: (capabilityId, params) => {
+            const normalized = normalizeDiscordCapabilityId(capabilityId);
+            if (isDiscordCapabilityId(normalized) && this.config.discordModule?.isAvailable()) {
+              return this.config.discordModule.invokeSideEffect(normalized, params);
+            }
+            return this.moduleGateway.invokeCapability(normalized, params, {
+              revocable: !isDiscordCapabilityId(normalized),
+              timeoutMs: isDiscordCapabilityId(normalized)
+                ? Math.max(this.config.moduleRequestTimeoutMs, 120_000)
+                : this.config.moduleRequestTimeoutMs,
+              timeoutGraceMs: isDiscordCapabilityId(normalized) ? 45_000 : undefined,
+            });
+          },
           onEvent: input.onTrace,
         },
       });

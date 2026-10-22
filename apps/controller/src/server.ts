@@ -206,6 +206,14 @@ export async function buildServer(config: AppConfig) {
     publishSnapshot();
   };
 
+  discordService = new DiscordModuleService(
+    registry,
+    moduleGateway,
+    config.cognition.moduleRequestTimeoutMs,
+  );
+
+  let discordPromptCache: { at: number; text: string } | null = null;
+
   const engine = new CognitiveEngine(
     llmBackend,
     registry,
@@ -223,16 +231,22 @@ export async function buildServer(config: AppConfig) {
       memoryRetrievalTokenBudget: memoryCfg.retrieval?.tokenBudget,
       memoryRetrievalMaxItems: memoryCfg.retrieval?.maxItems,
       sessionHydrationLimit: Math.max(episodeCfg.hotWindowMessages * 2, 80),
+      discordModule: discordService,
+      fetchDiscordPromptContext: async () => {
+        const cfg = discordStore.load();
+        if (!cfg.enabled || !discordService.isAvailable()) return undefined;
+        const cached = discordPromptCache;
+        if (cached && Date.now() - cached.at < 60_000) return cached.text;
+        const { formatDiscordChannelDirectory } = await import("./discord/channel-directory.js");
+        const list = await discordService.listChannels();
+        const text = formatDiscordChannelDirectory(cfg, list);
+        discordPromptCache = { at: Date.now(), text };
+        return text;
+      },
     },
     memoryService,
     memoryCurator,
     episodeCompactor,
-  );
-
-  discordService = new DiscordModuleService(
-    registry,
-    moduleGateway,
-    config.cognition.moduleRequestTimeoutMs,
   );
   const discordOrchestrator = new DiscordOrchestrator(
     discordStore,
@@ -241,7 +255,7 @@ export async function buildServer(config: AppConfig) {
     characterStore,
     llmBackend,
     eventLog,
-    20_000,
+    Math.max(45_000, config.cognition.moduleRequestTimeoutMs),
   );
   let discordConfigPushInFlight: Promise<void> | null = null;
   let lastDiscordConfigPushFp: string | null = null;

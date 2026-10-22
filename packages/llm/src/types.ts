@@ -12,6 +12,8 @@ export type ToolCall = {
 export type ChatMessage = {
   role: ChatRole;
   content: string | null;
+  /** OpenRouter / DeepSeek-style chain-of-thought (not shown to end users). */
+  reasoning?: string | null;
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
@@ -28,11 +30,15 @@ export type ToolDefinition = {
 
 export type CompletionRequest = {
   messages: ChatMessage[];
+  /** When set, use this provider profile instead of the active one (module RPC + runtime). */
+  providerId?: string;
   model?: string;
   tools?: ToolDefinition[];
   toolChoice?: "auto" | "none" | { type: "function"; function: { name: string } };
   temperature?: number;
   maxTokens?: number;
+  /** Merged into the provider HTTP body (e.g. OpenRouter `reasoning`). */
+  providerExtras?: Record<string, unknown>;
   signal?: AbortSignal;
 };
 

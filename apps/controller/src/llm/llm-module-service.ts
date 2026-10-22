@@ -1,4 +1,11 @@
-import { providerCategory, type LLMProvider } from "@echo/llm";
+import {
+  ModelOverrideProvider,
+  providerCategory,
+  resolveTaskBinding,
+  type LLMProvider,
+  type LlmTask,
+  type ProviderProfile,
+} from "@echo/llm";
 import type { ModuleRegistry } from "../registry/module-registry.js";
 import type { ModuleGateway } from "../ws/module-gateway.js";
 import { LLM_SETTINGS_GET, LLM_SETTINGS_UPDATE } from "./constants.js";
@@ -7,6 +14,9 @@ import { ModuleLlmProvider } from "./module-llm-provider.js";
 
 export class LlmModuleService implements LlmBackend {
   readonly adapter = "module" as const;
+  private readonly moduleProviders = new Map<string, ModuleLlmProvider>();
+  private readonly taskProviders = new Map<LlmTask, LLMProvider>();
+
   constructor(
     private readonly moduleRegistry: ModuleRegistry,
     private readonly moduleGateway: ModuleGateway,
@@ -34,6 +44,7 @@ export class LlmModuleService implements LlmBackend {
     const result = await this.moduleGateway.invokeCapability(LLM_SETTINGS_UPDATE, params, {
       timeoutMs: this.requestTimeoutMs,
     });
+    this.clearProviderCache();
     return result as LlmSettingsResponse;
   }
 
@@ -64,17 +75,34 @@ export class LlmModuleService implements LlmBackend {
     return settings.activeProviderId;
   }
 
-  async createActiveProvider(): Promise<LLMProvider> {
-    const { settings } = await this.getSettings();
-    const profile = settings.providers.find((p) => p.id === settings.activeProviderId);
-    if (!profile) {
-      throw new Error(`Active provider profile "${settings.activeProviderId}" not found`);
-    }
+  createActiveProvider(): Promise<LLMProvider> {
+    return this.createProviderForTask("chat");
+  }
+
+  async createProviderForTask(task: LlmTask): Promise<LLMProvider> {
     if (!this.isAvailable()) {
       throw new Error("LLM module not connected");
     }
 
-    return new ModuleLlmProvider(
+    const cached = this.taskProviders.get(task);
+    if (cached) return cached;
+
+    const { settings } = await this.getSettings();
+    const binding = resolveTaskBinding(settings, task);
+    const base = this.getOrCreateModuleProvider(binding.profile);
+    const provider =
+      binding.model === binding.profile.model
+        ? base
+        : new ModelOverrideProvider(base, binding.model);
+    this.taskProviders.set(task, provider);
+    return provider;
+  }
+
+  private getOrCreateModuleProvider(profile: ProviderProfile): ModuleLlmProvider {
+    let provider = this.moduleProviders.get(profile.id);
+    if (provider) return provider;
+
+    provider = new ModuleLlmProvider(
       profile.id,
       profile.label,
       profile.model,
@@ -86,6 +114,13 @@ export class LlmModuleService implements LlmBackend {
       this.moduleGateway,
       this.requestTimeoutMs,
     );
+    this.moduleProviders.set(profile.id, provider);
+    return provider;
+  }
+
+  private clearProviderCache(): void {
+    this.moduleProviders.clear();
+    this.taskProviders.clear();
   }
 
   private assertAvailable(): void {

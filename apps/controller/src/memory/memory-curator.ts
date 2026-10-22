@@ -90,7 +90,7 @@ export class MemoryCurator {
     if (!this.memory.isAvailable() || !this.llm.isAvailable()) return;
     if (input.userMessage.trim().length < this.config.minUserMessageLength) return;
 
-    const provider = await this.llm.createActiveProvider();
+    const provider = await this.llm.createProviderForTask("memory_extract");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
 

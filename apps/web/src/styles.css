@@ -532,6 +532,33 @@ body {
   gap: 1rem;
 }
 
+.llm-task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.llm-task-row {
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.llm-task-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.65rem;
+}
+
+.llm-task-head strong {
+  font-size: 0.9rem;
+}
+
 .field {
   display: flex;
   flex-direction: column;

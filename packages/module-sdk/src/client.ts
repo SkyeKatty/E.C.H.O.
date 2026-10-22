@@ -29,7 +29,10 @@ export class ModuleClient {
   private connecting = false;
   private readonly registrationWaiters: Array<() => void> = [];
   private readonly handlers = new Map<string, RequestHandler>();
-  private readonly activeRequests = new Map<string, AbortController>();
+  private readonly activeRequests = new Map<
+    string,
+    { controller: AbortController; capabilityId: string }
+  >();
   private readonly pending = new Map<
     string,
     { resolve: (v: Envelope) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
@@ -176,14 +179,19 @@ export class ModuleClient {
         break;
       }
       case MESSAGE_TYPES.REQUEST: {
-        await this.handleRequest(envelope);
+        void this.handleRequest(envelope).catch((err) => {
+          this.log.error({ err }, "Request handler failed");
+        });
         break;
       }
       case MESSAGE_TYPES.CANCEL: {
         const correlationId = envelope.correlationId;
-        if (correlationId) {
-          this.activeRequests.get(correlationId)?.abort();
-        }
+        if (!correlationId) break;
+        const pending = this.activeRequests.get(correlationId);
+        if (!pending) break;
+        const id = pending.capabilityId;
+        if (id === "discord.voice.join" || id === "discord.voice.leave") break;
+        pending.controller.abort();
         break;
       }
       default:
@@ -212,7 +220,7 @@ export class ModuleClient {
     }
 
     const abort = new AbortController();
-    this.activeRequests.set(envelope.messageId, abort);
+    this.activeRequests.set(envelope.messageId, { controller: abort, capabilityId });
     let streamed = false;
     const context: ModuleRequestContext = {
       signal: abort.signal,
