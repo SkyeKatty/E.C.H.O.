@@ -6,7 +6,7 @@ export type GateInput = {
   channelLabel: string;
   /** New message to evaluate (speaker: text). */
   currentMessage: string;
-  /** Messages the persona already chose to ignore since their last reply (context only). */
+  /** Ordered channel transcript for the gate window (users + persona; excludes the new message). */
   skippedContext?: string;
   mentionedBot: boolean;
   referencedBot: boolean;
@@ -23,7 +23,7 @@ Return ONLY JSON: {"shouldRespond":boolean,"reason":"short phrase"}
 Respond true when the persona would naturally join now (direct question, strong relevance, emotional moment, or they're being addressed).
 Respond false when they would stay silent for this new message (side chatter, not their business, already said enough).
 
-Prior skipped messages are context for what happened while the persona was quiet — base the decision on the NEW message.`;
+Prior channel lines may be included in order before the new message — base the decision on the NEW message.`;
 
 export async function evaluateDiscordRelevance(
   llm: LlmBackend,
@@ -38,9 +38,7 @@ export async function evaluateDiscordRelevance(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  const skippedBlock = input.skippedContext?.trim()
-    ? `While the persona stayed silent, the channel had:\n${input.skippedContext}\n\n`
-    : "";
+  const skippedBlock = input.skippedContext?.trim() ? `${input.skippedContext}\n\n` : "";
 
   try {
     const card = input.character;

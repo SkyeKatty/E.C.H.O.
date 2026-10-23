@@ -49,6 +49,18 @@ client.registerHandler(DISCORD_CAPABILITIES.CONFIG_STATUS, () => runtime.getStat
 
 client.registerHandler(DISCORD_CAPABILITIES.MESSAGE_SEND, (_env, params) => runtime.sendMessage(params));
 
+client.registerHandler(DISCORD_CAPABILITIES.EMOJI_LIST, (_env, params) => runtime.listEmojis(params));
+
+client.registerHandler(DISCORD_CAPABILITIES.MEMBER_RESOLVE, (_env, params) =>
+  runtime.resolveMembers(params),
+);
+
+client.registerHandler(DISCORD_CAPABILITIES.MESSAGE_REACT, (_env, params) => runtime.reactToMessage(params));
+
+client.registerHandler(DISCORD_CAPABILITIES.MESSAGE_REACTIONS_GET, (_env, params) =>
+  runtime.getMessageReactions(params),
+);
+
 client.registerHandler(DISCORD_CAPABILITIES.VOICE_JOIN, (_env, params) => runtime.joinVoice(params));
 
 client.registerHandler(DISCORD_CAPABILITIES.VOICE_LEAVE, (_env, params) => runtime.leaveVoice(params));

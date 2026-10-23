@@ -1,5 +1,9 @@
 import type { DiscordRuntimeConfig } from "@echo/discord-contract";
-import { discordInboundBatchSchema, type discordInboundMessageSchema } from "@echo/discord-contract";
+import {
+  discordChannelActivitySchema,
+  discordInboundBatchSchema,
+  type discordInboundMessageSchema,
+} from "@echo/discord-contract";
 import type { z } from "zod";
 
 type InboundMessage = z.infer<typeof discordInboundMessageSchema>;
@@ -14,6 +18,19 @@ export class ControllerClient {
     const h: Record<string, string> = { "Content-Type": "application/json" };
     if (this.authToken) h.Authorization = `Bearer ${this.authToken}`;
     return h;
+  }
+
+  async postActivity(payload: { guildId: string; channelId: string; text: string }): Promise<void> {
+    const body = discordChannelActivitySchema.parse(payload);
+    const res = await fetch(`${this.baseUrl}/api/v1/discord/activity`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`activity failed: ${res.status} ${err}`);
+    }
   }
 
   async postInbound(messages: InboundMessage[]): Promise<void> {

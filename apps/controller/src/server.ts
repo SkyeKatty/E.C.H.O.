@@ -27,6 +27,9 @@ import { DiscordSettingsStore } from "./discord/settings-store.js";
 import { DiscordModuleService } from "./discord/discord-module-service.js";
 import { DiscordOrchestrator } from "./discord/discord-orchestrator.js";
 import { registerDiscordRoutes } from "./routes/discord.js";
+import { TimeModuleService } from "./time/time-module-service.js";
+import { TimeOrchestrator } from "./time/time-orchestrator.js";
+import { registerTimeRoutes } from "./routes/time.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -60,6 +63,7 @@ export async function buildServer(config: AppConfig) {
   let syncingPersonaFromLlm = false;
   const discordStore = new DiscordSettingsStore();
   let discordService!: DiscordModuleService;
+  let timeService!: TimeModuleService;
   let syncDiscordConfig!: () => Promise<void>;
 
   function buildSnapshot(): SystemSnapshot {
@@ -83,6 +87,10 @@ export async function buildServer(config: AppConfig) {
         moduleAvailable: discordService?.isAvailable() ?? false,
         moduleId: discordService?.isAvailable() ? discordService.getModuleId() : null,
         enabled: discordStore.load().enabled,
+      },
+      timekeeping: {
+        moduleAvailable: timeService?.isAvailable() ?? false,
+        moduleId: timeService?.isAvailable() ? timeService.getModuleId() : null,
       },
       character: {
         activeCharacterId: persona.activeCharacterId,
@@ -234,6 +242,7 @@ export async function buildServer(config: AppConfig) {
     moduleGateway,
     config.cognition.moduleRequestTimeoutMs,
   );
+  timeService = new TimeModuleService(registry, moduleGateway, config.cognition.moduleRequestTimeoutMs);
   const discordOrchestrator = new DiscordOrchestrator(
     discordStore,
     discordService,
@@ -243,6 +252,7 @@ export async function buildServer(config: AppConfig) {
     eventLog,
     20_000,
   );
+  const timeOrchestrator = new TimeOrchestrator(engine, discordService, eventLog);
   let discordConfigPushInFlight: Promise<void> | null = null;
   let lastDiscordConfigPushFp: string | null = null;
 
@@ -288,6 +298,11 @@ export async function buildServer(config: AppConfig) {
     onConfigPushed: (fp) => {
       lastDiscordConfigPushFp = fp;
     },
+  });
+  registerTimeRoutes(app, {
+    time: timeService,
+    orchestrator: timeOrchestrator,
+    moduleAuthToken: config.controller.moduleAuthToken,
   });
 
   await registerCharacterRoutes(app, characterStore, () => {

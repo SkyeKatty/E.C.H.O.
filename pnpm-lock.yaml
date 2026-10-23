@@ -22,6 +22,9 @@ importers:
       '@echo/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@echo/time-contract':
+        specifier: workspace:*
+        version: link:../../packages/time-contract
       '@echo/voice-contract':
         specifier: workspace:*
         version: link:../../packages/voice-contract
@@ -169,6 +172,31 @@ importers:
         specifier: ^5.7.2
         version: 5.9.3
 
+  modules/timekeeping:
+    dependencies:
+      '@echo/module-sdk':
+        specifier: workspace:*
+        version: link:../../packages/module-sdk
+      '@echo/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@echo/time-contract':
+        specifier: workspace:*
+        version: link:../../packages/time-contract
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.5
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.15
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
   packages/discord-contract:
     dependencies:
       zod:
@@ -236,6 +264,16 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.5)
+
+  packages/time-contract:
+    dependencies:
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
 
   packages/voice-contract:
     dependencies:

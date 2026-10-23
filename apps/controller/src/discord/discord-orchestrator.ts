@@ -7,27 +7,91 @@ import type { LlmBackend } from "../llm/llm-backend.js";
 import type { DiscordModuleService } from "./discord-module-service.js";
 import type { DiscordSettingsStore } from "./settings-store.js";
 import { discordParticipant } from "./participant.js";
+import { registerDiscordSession } from "./session-delivery.js";
 import { discordTextSessionId } from "./session-id.js";
 import { evaluateDiscordRelevance } from "./relevance-gate.js";
 
 type InboundMessage = z.infer<typeof discordInboundMessageSchema>;
 
+/** Extra channel lines included before the “since last reply” backlog. */
+const PRIOR_BEFORE_BACKLOG = 3;
+
 type ChannelState = {
   guildId: string;
   channelId: string;
-  /** Messages the persona skipped since last reply (capped). */
-  skipped: InboundMessage[];
+  /** All inbound messages since the persona’s last reply in this channel (skipped or not). */
+  sinceLastReply: InboundMessage[];
+  /** Rolling channel timeline (users + persona replies), ordered by `createdAt`. */
+  recentInbound: InboundMessage[];
+  /** Reaction / activity lines shown on the next gate or reply turn. */
+  pendingActivity: string[];
   /** Per-message gate / skip decisions in Discord order. */
   decisionChain: Promise<void>;
   /** Outbound replies — one at a time per channel, not blocked on gate latency. */
   replyChain: Promise<void>;
 };
 
+function formatInboundLine(m: InboundMessage): string {
+  let line = `${m.displayName}: ${m.content}`.trim();
+  if (m.replyTo) {
+    line += `\n  ↳ replying to ${m.replyTo.authorDisplayName}: "${m.replyTo.content.replace(/\n/g, " ").slice(0, 500)}"`;
+  }
+  if (m.mentionedUsers?.length) {
+    const names = m.mentionedUsers.map((u) => u.displayName ?? u.username).join(", ");
+    line += `\n  (mentions: ${names})`;
+  }
+  return line;
+}
+
 function formatMessagesForPrompt(messages: InboundMessage[]): string {
-  return messages
-    .map((m) => `${m.displayName}: ${m.content}`.trim())
-    .filter(Boolean)
-    .join("\n");
+  return messages.map(formatInboundLine).filter(Boolean).join("\n");
+}
+
+function consumePendingActivity(state: ChannelState): string | undefined {
+  if (state.pendingActivity.length === 0) return undefined;
+  const lines = state.pendingActivity.splice(0, state.pendingActivity.length);
+  return lines.join("\n");
+}
+
+function timelineOrder(a: InboundMessage, b: InboundMessage): number {
+  const ta = a.createdAt ?? "";
+  const tb = b.createdAt ?? "";
+  if (ta !== tb) return ta.localeCompare(tb);
+  return a.messageId.localeCompare(b.messageId);
+}
+
+function sortedTimeline(messages: InboundMessage[]): InboundMessage[] {
+  return [...messages].sort(timelineOrder);
+}
+
+/** Up to `priorCount` lines before the backlog, the backlog, and any persona lines between them. */
+function buildContextWindow(
+  recent: InboundMessage[],
+  backlog: InboundMessage[],
+  priorCount: number,
+): InboundMessage[] {
+  const ordered = sortedTimeline(recent);
+  if (backlog.length === 0) {
+    return priorCount > 0 ? ordered.slice(-priorCount) : [];
+  }
+  const backlogIds = new Set(backlog.map((m) => m.messageId));
+  const firstIdx = ordered.findIndex((m) => backlogIds.has(m.messageId));
+  if (firstIdx < 0) return backlog;
+  const start = Math.max(0, firstIdx - priorCount);
+  const lastId = backlog[backlog.length - 1]!.messageId;
+  const lastIdx = ordered.findIndex((m) => m.messageId === lastId);
+  const end = lastIdx >= 0 ? lastIdx : ordered.length - 1;
+  return ordered.slice(start, end + 1);
+}
+
+function withReceivedAt(msg: InboundMessage): InboundMessage {
+  return msg.createdAt ? msg : { ...msg, createdAt: new Date().toISOString() };
+}
+
+function trimInboundBuffer(messages: InboundMessage[], max: number): void {
+  while (messages.length > max) {
+    messages.shift();
+  }
 }
 
 export class DiscordOrchestrator {
@@ -44,6 +108,31 @@ export class DiscordOrchestrator {
     private readonly gateTimeoutMs: number,
   ) {}
 
+  enqueueActivity(input: { guildId: string; channelId: string; text: string }): void {
+    const cfg = this.settings.load();
+    if (!cfg.enabled) return;
+    if (cfg.guildId && input.guildId !== cfg.guildId) return;
+
+    const key = input.channelId;
+    let state = this.channels.get(key);
+    if (!state) {
+      state = {
+        guildId: input.guildId,
+        channelId: input.channelId,
+        sinceLastReply: [],
+        recentInbound: [],
+        pendingActivity: [],
+        decisionChain: Promise.resolve(),
+        replyChain: Promise.resolve(),
+      };
+      this.channels.set(key, state);
+    }
+    state.pendingActivity.push(input.text);
+    while (state.pendingActivity.length > 12) {
+      state.pendingActivity.shift();
+    }
+  }
+
   enqueueInbound(msg: InboundMessage): void {
     const cfg = this.settings.load();
     if (!cfg.enabled) return;
@@ -59,7 +148,9 @@ export class DiscordOrchestrator {
       state = {
         guildId: msg.guildId,
         channelId: msg.channelId,
-        skipped: [],
+        sinceLastReply: [],
+        recentInbound: [],
+        pendingActivity: [],
         decisionChain: Promise.resolve(),
         replyChain: Promise.resolve(),
       };
@@ -82,7 +173,24 @@ export class DiscordOrchestrator {
     if (!character) return;
     if (!this.engine.isChatAvailable()) return;
 
-    const maxSkipped = cfg.batchMaxMessages;
+    msg = withReceivedAt(msg);
+    registerDiscordSession(
+      discordTextSessionId(msg.guildId, msg.channelId),
+      msg.guildId,
+      msg.channelId,
+    );
+
+    const maxBacklog = cfg.batchMaxMessages;
+    const backlog = state.sinceLastReply;
+    const activityPrefix = consumePendingActivity(state);
+    const contextWindow = buildContextWindow(state.recentInbound, backlog, PRIOR_BEFORE_BACKLOG);
+    let gateContext =
+      contextWindow.length > 0 ? formatMessagesForPrompt(contextWindow) : undefined;
+    if (activityPrefix) {
+      gateContext = gateContext
+        ? `[Recent channel activity]\n${activityPrefix}\n\n${gateContext}`
+        : `[Recent channel activity]\n${activityPrefix}`;
+    }
 
     let shouldRespond =
       (cfg.alwaysRespondToMention && msg.mentionedBot) ||
@@ -99,9 +207,8 @@ export class DiscordOrchestrator {
         {
           character,
           channelLabel: `#${msg.channelId}`,
-          currentMessage: `${msg.displayName}: ${msg.content}`,
-          skippedContext:
-            state.skipped.length > 0 ? formatMessagesForPrompt(state.skipped) : undefined,
+          currentMessage: formatInboundLine(msg),
+          skippedContext: gateContext,
           mentionedBot: msg.mentionedBot,
           referencedBot: msg.referencedBotMessage,
         },
@@ -115,21 +222,38 @@ export class DiscordOrchestrator {
     }
 
     if (!shouldRespond) {
-      state.skipped.push(msg);
-      while (state.skipped.length > maxSkipped) {
-        state.skipped.shift();
-      }
+      state.sinceLastReply.push(msg);
+      trimInboundBuffer(state.sinceLastReply, maxBacklog);
+      state.recentInbound.push(msg);
+      trimInboundBuffer(state.recentInbound, maxBacklog + PRIOR_BEFORE_BACKLOG + 16);
       this.eventLog.append({
         type: "discord.skip",
-        summary: `Skipped message in ${msg.channelId} (${gateReason}); ${state.skipped.length} queued`,
+        summary: `Skipped message in ${msg.channelId} (${gateReason}); backlog ${state.sinceLastReply.length}`,
       });
       return;
     }
 
-    const batch = [...state.skipped, msg];
-    state.skipped = [];
+    const batchMessages = [...contextWindow, msg];
+    const batch = activityPrefix
+      ? ([
+          {
+            messageId: `activity-${Date.now()}`,
+            guildId: msg.guildId,
+            channelId: msg.channelId,
+            userId: "system",
+            displayName: "Channel activity",
+            content: activityPrefix,
+            mentionedBot: false,
+            referencedBotMessage: false,
+          } satisfies InboundMessage,
+          ...batchMessages,
+        ] as InboundMessage[])
+      : batchMessages;
+    state.sinceLastReply = [];
+    state.recentInbound.push(msg);
+    trimInboundBuffer(state.recentInbound, maxBacklog + PRIOR_BEFORE_BACKLOG + 16);
     state.replyChain = state.replyChain
-      .then(() => this.respondToBatch(batch, gateReason))
+      .then(() => this.respondToBatch(state, batch, gateReason))
       .catch((err) => {
         this.eventLog.append({
           type: "discord.error",
@@ -138,12 +262,46 @@ export class DiscordOrchestrator {
       });
   }
 
-  private async respondToBatch(batch: InboundMessage[], gateReason: string): Promise<void> {
+  private recordPersonaReply(
+    state: ChannelState,
+    input: {
+      messageId: string;
+      guildId: string;
+      channelId: string;
+      displayName: string;
+      content: string;
+      after: InboundMessage;
+    },
+  ): void {
+    let createdAt = new Date().toISOString();
+    if (input.after.createdAt) {
+      createdAt = new Date(new Date(input.after.createdAt).getTime() + 1).toISOString();
+    }
+    state.recentInbound.push({
+      messageId: input.messageId,
+      guildId: input.guildId,
+      channelId: input.channelId,
+      userId: "persona",
+      displayName: input.displayName,
+      content: input.content,
+      mentionedBot: false,
+      referencedBotMessage: false,
+      createdAt,
+    });
+    trimInboundBuffer(state.recentInbound, 64);
+  }
+
+  private async respondToBatch(
+    state: ChannelState,
+    batch: InboundMessage[],
+    gateReason: string,
+  ): Promise<void> {
     const last = batch[batch.length - 1]!;
     const batchedUserText = formatMessagesForPrompt(batch);
 
     const speaker = discordParticipant(last.guildId, last.userId, last.displayName);
     const sessionId = discordTextSessionId(last.guildId, last.channelId);
+    const character = this.characters.getActive();
 
     this.eventLog.append({
       type: "discord.inbound",
@@ -165,11 +323,23 @@ export class DiscordOrchestrator {
       return;
     }
 
-    await this.discord.sendMessage({
+    const content = result.reply.slice(0, 2000);
+    const sent = (await this.discord.sendMessage({
       channelId: last.channelId,
-      content: result.reply.slice(0, 2000),
+      content,
       replyToMessageId: last.messageId,
-    });
+    })) as { messageId?: string };
+
+    if (sent.messageId) {
+      this.recordPersonaReply(state, {
+        messageId: sent.messageId,
+        guildId: last.guildId,
+        channelId: last.channelId,
+        displayName: character?.name ?? "Persona",
+        content,
+        after: last,
+      });
+    }
 
     this.eventLog.append({
       type: "discord.outbound",

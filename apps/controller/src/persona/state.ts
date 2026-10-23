@@ -55,6 +55,10 @@ export type SystemSnapshot = {
     moduleId: string | null;
     enabled: boolean;
   };
+  timekeeping?: {
+    moduleAvailable: boolean;
+    moduleId: string | null;
+  };
   character: {
     activeCharacterId: string | null;
     activeCharacterName: string | null;

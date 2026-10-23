@@ -247,12 +247,13 @@ export function DiscordPanel(props: { moduleAvailable: boolean }) {
 
       <h3>Text behavior</h3>
       <p className="muted">
-        Each message is gated individually. Skipped messages accumulate (cap below) and are sent together when the
-        persona chooses to reply.
+        Each message is gated individually. Context is one ordered transcript: up to three lines before the backlog,
+        every user message since the persona last replied, and her replies when they fall in that window (backlog cap
+        below).
       </p>
       <div className="form-grid">
         <label>
-          Max skipped messages without a reply
+          Max backlog since last reply
           <input
             type="number"
             className="text-input"

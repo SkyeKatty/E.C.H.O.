@@ -12,6 +12,7 @@
     "dev:memory": "cd modules/memory && python -m memory_module",
     "dev:memory:embed": "cd modules/memory && pip install -e \".[embeddings]\" && python -m memory_module",
     "dev:discord": "pnpm --filter @echo/module-discord dev",
+    "dev:time": "pnpm --filter @echo/module-timekeeping dev",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck"
   },

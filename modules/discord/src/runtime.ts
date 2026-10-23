@@ -3,16 +3,28 @@ import {
   Events,
   GatewayIntentBits,
   Partials,
+  type Guild,
   type Message,
   type VoiceBasedChannel,
 } from "discord.js";
 import {
   DISCORD_CAPABILITIES,
   discordConfigApplySchema,
+  discordEmojiListSchema,
+  discordMemberResolveSchema,
+  discordMessageReactSchema,
+  discordMessageReactionsGetSchema,
   discordMessageSendSchema,
   discordVoiceJoinSchema,
   discordVoiceSpeakSchema,
   type DiscordRuntimeConfig,
+} from "@echo/discord-contract";
+import {
+  discordEmojiListToolSchema,
+  discordMemberResolveToolSchema,
+  discordMessageReactToolSchema,
+  discordMessageReactionsGetToolSchema,
+  discordMessageSendToolSchema,
 } from "@echo/discord-contract";
 import { ControllerClient } from "./controller-client.js";
 import { discordConnectionFingerprint, needsDiscordReconnect } from "./config-fingerprint.js";
@@ -148,6 +160,9 @@ export class DiscordRuntime {
     const intents = [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.GuildMessageReactions,
+      GatewayIntentBits.GuildEmojisAndStickers,
+      GatewayIntentBits.GuildMembers,
       GatewayIntentBits.GuildVoiceStates,
     ];
     if (!cfg.mentionsOnlyMode) {
@@ -156,7 +171,7 @@ export class DiscordRuntime {
 
     const client = new Client({
       intents,
-      partials: [Partials.Channel],
+      partials: [Partials.Channel, Partials.Message, Partials.Reaction],
     });
 
     let readyLogged = false;
@@ -169,6 +184,7 @@ export class DiscordRuntime {
     });
 
     client.on(Events.MessageCreate, (msg) => void this.onMessage(msg));
+    client.on(Events.MessageReactionAdd, (reaction, user) => void this.onReactionAdd(reaction, user));
 
     client.on(Events.VoiceStateUpdate, (oldState, newState) => {
       const cfg = this.config;
@@ -221,10 +237,38 @@ export class DiscordRuntime {
     if (cfg?.guildId && msg.guildId !== cfg.guildId) return;
 
     const mentionedBot = Boolean(this.client?.user && msg.mentions.users.has(this.client.user.id));
-    const referencedBotMessage = Boolean(
-      msg.reference?.messageId &&
-        msg.channel.messages.cache.get(msg.reference.messageId)?.author.id === this.client?.user?.id,
-    );
+    let referencedBotMessage = false;
+    let replyTo: {
+      messageId: string;
+      authorUserId: string;
+      authorDisplayName: string;
+      content: string;
+    } | undefined;
+
+    if (msg.reference?.messageId) {
+      const ref = await msg.fetchReference().catch(() => null);
+      if (ref) {
+        referencedBotMessage = ref.author.id === this.client?.user?.id;
+        const refContent =
+          ref.content.trim() ||
+          (ref.attachments.size > 0 ? `[${ref.attachments.size} attachment(s)]` : "[no text content]");
+        replyTo = {
+          messageId: ref.id,
+          authorUserId: ref.author.id,
+          authorDisplayName:
+            ref.member?.displayName ?? ref.author.displayName ?? ref.author.username,
+          content: refContent.slice(0, 1500),
+        };
+      }
+    }
+
+    const mentionedUsers = [...msg.mentions.users.values()]
+      .filter((u) => !u.bot)
+      .map((u) => ({
+        userId: u.id,
+        username: u.username,
+        displayName: msg.guild?.members.cache.get(u.id)?.displayName ?? u.displayName ?? undefined,
+      }));
 
     await this.controller.postInbound([
       {
@@ -236,9 +280,209 @@ export class DiscordRuntime {
         content: msg.content,
         mentionedBot,
         referencedBotMessage,
+        replyTo,
+        mentionedUsers: mentionedUsers.length > 0 ? mentionedUsers : undefined,
         createdAt: msg.createdAt.toISOString(),
       },
     ]);
+  }
+
+  private async onReactionAdd(
+    reaction: import("discord.js").MessageReaction,
+    user: import("discord.js").User | import("discord.js").PartialUser,
+  ): Promise<void> {
+    if (user.bot) return;
+    if (reaction.partial) {
+      try {
+        await reaction.fetch();
+      } catch {
+        return;
+      }
+    }
+    const message = reaction.message;
+    if (message.partial) {
+      try {
+        await message.fetch();
+      } catch {
+        return;
+      }
+    }
+    if (!message.guildId || !message.inGuild()) return;
+    if (!this.channelAllowed(message.channelId)) return;
+    const cfg = this.config;
+    if (cfg?.guildId && message.guildId !== cfg.guildId) return;
+
+    const emojiLabel = reaction.emoji.id
+      ? `<${reaction.emoji.animated ? "a" : ""}:${reaction.emoji.name}:${reaction.emoji.id}>`
+      : (reaction.emoji.name ?? "?");
+
+    const reactorName =
+      message.guild?.members.cache.get(user.id)?.displayName ??
+      ("username" in user && user.username ? user.username : "Someone");
+
+    const authorName =
+      message.member?.displayName ??
+      message.author.displayName ??
+      message.author.username;
+    const snippet =
+      message.content.trim().slice(0, 120) ||
+      (message.attachments.size > 0 ? `[${message.attachments.size} attachment(s)]` : "[no text]");
+
+    await this.controller.postActivity({
+      guildId: message.guildId,
+      channelId: message.channelId,
+      text: `${reactorName} reacted ${emojiLabel} to ${authorName}: "${snippet}"`,
+    });
+  }
+
+  private resolveGuildId(explicit?: string): string {
+    const guildId = explicit?.trim() || this.config?.guildId?.trim();
+    if (!guildId) throw new Error("guildId is required (configure guild or pass guildId)");
+    return guildId;
+  }
+
+  private async fetchGuild(guildId: string): Promise<Guild> {
+    const client = this.client;
+    if (!client) throw new Error("Discord client not ready");
+    return client.guilds.fetch(guildId);
+  }
+
+  private resolveReactEmoji(guild: Guild, emoji: string): string {
+    const trimmed = emoji.trim();
+    const mentionMatch = trimmed.match(/^<a?:([\w~]+):(\d+)>$/);
+    if (mentionMatch) return mentionMatch[2]!;
+    if (/^\d+$/.test(trimmed) && guild.emojis.cache.has(trimmed)) return trimmed;
+    const bareName = trimmed.replace(/^:+|:+$/g, "");
+    const byName = guild.emojis.cache.find(
+      (e) => e.name?.toLowerCase() === bareName.toLowerCase(),
+    );
+    if (byName) return byName.id;
+    return trimmed;
+  }
+
+  async listEmojis(params: unknown): Promise<{
+    emojis: { id: string; name: string; animated: boolean; mention: string }[];
+  }> {
+    const body = discordEmojiListSchema.parse(params);
+    const guild = await this.fetchGuild(this.resolveGuildId(body.guildId));
+    await guild.emojis.fetch();
+    const emojis = [...guild.emojis.cache.values()].map((e) => ({
+      id: e.id,
+      name: e.name ?? "emoji",
+      animated: e.animated ?? false,
+      mention: e.animated ? `<a:${e.name}:${e.id}>` : `<:${e.name}:${e.id}>`,
+    }));
+    return { emojis };
+  }
+
+  async resolveMembers(params: unknown): Promise<{
+    matches: { userId: string; username: string; displayName: string; mention: string }[];
+  }> {
+    const body = discordMemberResolveSchema.parse(params);
+    const guild = await this.fetchGuild(this.resolveGuildId(body.guildId));
+    const matches: { userId: string; username: string; displayName: string; mention: string }[] =
+      [];
+
+    const pushMember = (m: import("discord.js").GuildMember) => {
+      if (matches.some((x) => x.userId === m.id)) return;
+      matches.push({
+        userId: m.id,
+        username: m.user.username,
+        displayName: m.displayName,
+        mention: `<@${m.id}>`,
+      });
+    };
+
+    if (body.userId) {
+      const m = await guild.members.fetch(body.userId).catch(() => null);
+      if (m) pushMember(m);
+      return { matches };
+    }
+
+    const q = body.query!.toLowerCase();
+    for (const m of guild.members.cache.values()) {
+      if (matches.length >= 5) break;
+      const un = m.user.username.toLowerCase();
+      const dn = m.displayName.toLowerCase();
+      const gn = m.user.globalName?.toLowerCase() ?? "";
+      if (un === q || dn === q || gn === q || un.includes(q) || dn.includes(q)) {
+        pushMember(m);
+      }
+    }
+
+    if (matches.length === 0) {
+      try {
+        const searched = await guild.members.search({ query: body.query!, limit: 5 });
+        for (const m of searched.values()) {
+          pushMember(m);
+        }
+      } catch {
+        // Guild Members intent / search unavailable
+      }
+    }
+
+    return { matches: matches.slice(0, 5) };
+  }
+
+  async reactToMessage(params: unknown): Promise<{ ok: true }> {
+    const body = discordMessageReactSchema.parse(params);
+    const client = this.client;
+    if (!client) throw new Error("Discord client not ready");
+    const channel = await client.channels.fetch(body.channelId);
+    if (!channel || !channel.isTextBased() || channel.isDMBased()) {
+      throw new Error("Channel not found or not text");
+    }
+    const message = await channel.messages.fetch(body.messageId);
+    const guild = message.guild;
+    if (!guild) throw new Error("Message is not in a guild");
+    const emoji = this.resolveReactEmoji(guild, body.emoji);
+    await message.react(emoji);
+    return { ok: true };
+  }
+
+  async getMessageReactions(params: unknown): Promise<{
+    reactions: {
+      emoji: string;
+      count: number;
+      sampleUsers: { userId: string; username: string }[];
+    }[];
+  }> {
+    const body = discordMessageReactionsGetSchema.parse(params);
+    const client = this.client;
+    if (!client) throw new Error("Discord client not ready");
+    const channel = await client.channels.fetch(body.channelId);
+    if (!channel || !channel.isTextBased() || channel.isDMBased()) {
+      throw new Error("Channel not found or not text");
+    }
+    const message = await channel.messages.fetch(body.messageId);
+    const reactions: {
+      emoji: string;
+      count: number;
+      sampleUsers: { userId: string; username: string }[];
+    }[] = [];
+
+    for (const reaction of message.reactions.cache.values()) {
+      const emoji = reaction.emoji.id
+        ? `<${reaction.emoji.animated ? "a" : ""}:${reaction.emoji.name}:${reaction.emoji.id}>`
+        : (reaction.emoji.name ?? "?");
+      let sampleUsers: { userId: string; username: string }[] = [];
+      try {
+        const users = await reaction.users.fetch({ limit: 5 });
+        sampleUsers = [...users.values()].map((u) => ({
+          userId: u.id,
+          username: u.username,
+        }));
+      } catch {
+        sampleUsers = [];
+      }
+      reactions.push({
+        emoji,
+        count: reaction.count ?? sampleUsers.length,
+        sampleUsers,
+      });
+    }
+
+    return { reactions };
   }
 
   async sendMessage(params: unknown): Promise<{ messageId: string }> {
@@ -299,7 +543,7 @@ export const capabilityList = [
     name: "Discord health",
     description: "Connection status for the Discord bot",
     version: "1.0.0",
-    enabled: true,
+    enabled: false,
     supportsStreaming: false,
     supportsCancellation: false,
   },
@@ -308,7 +552,7 @@ export const capabilityList = [
     name: "Apply Discord config",
     description: "Login token, guild, channel policies",
     version: "1.0.0",
-    enabled: true,
+    enabled: false,
     supportsStreaming: false,
     supportsCancellation: false,
   },
@@ -317,7 +561,7 @@ export const capabilityList = [
     name: "Discord config status",
     description: "Runtime status without secrets",
     version: "1.0.0",
-    enabled: true,
+    enabled: false,
     supportsStreaming: false,
     supportsCancellation: false,
   },
@@ -329,6 +573,47 @@ export const capabilityList = [
     enabled: true,
     supportsStreaming: false,
     supportsCancellation: false,
+    inputSchema: discordMessageSendToolSchema,
+  },
+  {
+    id: DISCORD_CAPABILITIES.EMOJI_LIST,
+    name: "List guild emojis",
+    description: "List custom server emotes (use mention strings in messages or reactions)",
+    version: "1.0.0",
+    enabled: true,
+    supportsStreaming: false,
+    supportsCancellation: false,
+    inputSchema: discordEmojiListToolSchema,
+  },
+  {
+    id: DISCORD_CAPABILITIES.MEMBER_RESOLVE,
+    name: "Resolve guild member",
+    description: "Find a member by username/display name for @mentions",
+    version: "1.0.0",
+    enabled: true,
+    supportsStreaming: false,
+    supportsCancellation: false,
+    inputSchema: discordMemberResolveToolSchema,
+  },
+  {
+    id: DISCORD_CAPABILITIES.MESSAGE_REACT,
+    name: "React to message",
+    description: "Add an emoji reaction to a Discord message",
+    version: "1.0.0",
+    enabled: true,
+    supportsStreaming: false,
+    supportsCancellation: false,
+    inputSchema: discordMessageReactToolSchema,
+  },
+  {
+    id: DISCORD_CAPABILITIES.MESSAGE_REACTIONS_GET,
+    name: "Get message reactions",
+    description: "List reactions on a Discord message",
+    version: "1.0.0",
+    enabled: true,
+    supportsStreaming: false,
+    supportsCancellation: false,
+    inputSchema: discordMessageReactionsGetToolSchema,
   },
   {
     id: DISCORD_CAPABILITIES.VOICE_JOIN,

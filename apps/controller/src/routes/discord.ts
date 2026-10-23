@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import {
   discordConnectionFingerprint,
+  discordChannelActivitySchema,
   discordInboundBatchSchema,
   discordRuntimeConfigSchema,
   discordVoiceTranscriptSchema,
@@ -69,6 +70,18 @@ export function registerDiscordRoutes(
       });
     }
     return { settings: opts.store.redact(saved) };
+  });
+
+  app.post("/api/v1/discord/activity", async (req, reply) => {
+    if (!authorizeModule(req.headers.authorization)) {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+    const parsed = discordChannelActivitySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid payload", details: parsed.error.flatten() });
+    }
+    opts.orchestrator.enqueueActivity(parsed.data);
+    return { accepted: true };
   });
 
   app.post("/api/v1/discord/inbound", async (req, reply) => {

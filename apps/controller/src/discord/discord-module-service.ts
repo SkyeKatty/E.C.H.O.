@@ -70,6 +70,14 @@ export class DiscordModuleService {
     return this.invoke(DISCORD_CAPABILITIES.MESSAGE_SEND, params);
   }
 
+  async resolveMember(params: {
+    guildId?: string;
+    userId?: string;
+    query?: string;
+  }): Promise<{ matches: { userId: string; username: string; displayName: string; mention: string }[] }> {
+    return this.invoke(DISCORD_CAPABILITIES.MEMBER_RESOLVE, params);
+  }
+
   async speakInVoice(params: {
     guildId: string;
     channelId: string;

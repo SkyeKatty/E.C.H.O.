@@ -14,6 +14,9 @@ import type { MemoryCurator } from "../memory/memory-curator.js";
 import type { EpisodeCompactor } from "../memory/episode-compactor.js";
 import type { ParticipantRef } from "../memory/participant.js";
 import { formatAssistantTurnMessages, formatLlmOutput } from "../llm/output-format.js";
+import { DISCORD_CAPABILITIES } from "@echo/discord-contract";
+import { TIME_CAPABILITIES } from "@echo/time-contract";
+import { getDiscordDeliveryForSession } from "../discord/session-delivery.js";
 
 export type CognitiveEngineConfig = {
   maxToolIterations: number;
@@ -259,11 +262,58 @@ export class CognitiveEngine {
           maxIterations: this.config.maxToolIterations,
           requestTimeoutMs: this.config.requestTimeoutMs,
           resolveCapabilityId: (toolName) => toolNameToCapabilityId.get(toolName) ?? toolName,
-          invokeModule: (capabilityId, params, opts) =>
-            this.moduleGateway.invokeCapability(capabilityId, params, {
+          invokeModule: async (capabilityId, params, opts) => {
+            let payload = params;
+            if (capabilityId === TIME_CAPABILITIES.TIMER_CREATE) {
+              const base =
+                typeof params === "object" && params !== null
+                  ? { ...(params as Record<string, unknown>) }
+                  : {};
+              base.sessionId = base.sessionId ?? session.id;
+              base.personaId = base.personaId ?? character.id;
+              const discord = getDiscordDeliveryForSession(session.id);
+              if (discord && !base.notifyDiscord) {
+                base.notifyDiscord = {
+                  channelId: discord.channelId,
+                  guildId: discord.guildId,
+                };
+              }
+              const guildId =
+                (base.notifyDiscord as { guildId?: string } | undefined)?.guildId ?? discord?.guildId;
+              const mentionIds = new Set<string>(
+                Array.isArray(base.mentionUserIds)
+                  ? (base.mentionUserIds as string[]).filter((id) => typeof id === "string" && id.trim())
+                  : [],
+              );
+              const mentionNames = Array.isArray(base.mentionUsernames)
+                ? (base.mentionUsernames as string[]).filter((n) => typeof n === "string" && n.trim())
+                : [];
+              if (guildId && mentionNames.length > 0) {
+                for (const name of mentionNames) {
+                  try {
+                    const resolved = (await this.moduleGateway.invokeCapability(
+                      DISCORD_CAPABILITIES.MEMBER_RESOLVE,
+                      { guildId, query: name },
+                      { timeoutMs: this.config.moduleRequestTimeoutMs },
+                    )) as { matches?: { userId: string }[] };
+                    const first = resolved.matches?.[0];
+                    if (first?.userId) mentionIds.add(first.userId);
+                  } catch {
+                    // Discord offline or member not found
+                  }
+                }
+              }
+              if (mentionIds.size > 0) {
+                base.mentionUserIds = [...mentionIds];
+              }
+              delete base.mentionUsernames;
+              payload = base;
+            }
+            return this.moduleGateway.invokeCapability(capabilityId, payload, {
               signal: opts?.signal,
               timeoutMs: this.config.moduleRequestTimeoutMs,
-            }),
+            });
+          },
           onEvent: input.onTrace,
         },
       });
