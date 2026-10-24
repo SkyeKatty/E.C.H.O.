@@ -33,6 +33,11 @@ export const discordRuntimeConfigSchema = z.object({
   autoJoinVoice: z.boolean().default(true),
   /** Stop TTS when a non-bot user speaks (never talk over people). */
   voiceBargeInEnabled: z.boolean().default(true),
+  /**
+   * Request Server Members privileged intent (Developer Portal → Bot).
+   * Enables username search via discord.member.resolve; off by default so the bot can connect without it.
+   */
+  serverMembersIntent: z.boolean().default(false),
   /** After N interrupts in one call, persona may comment on being cut off. */
   voiceInterruptAnnoyanceThreshold: z.number().int().min(1).max(20).default(3),
 });
@@ -112,10 +117,35 @@ export const discordInboundBatchSchema = z.object({
   messages: z.array(discordInboundMessageSchema).min(1).max(50),
 });
 
+/** LLM / tool args — resolve by snowflake or voice channel name. */
+export const discordVoiceJoinParamsSchema = z
+  .object({
+    guildId: z.string().min(1).optional(),
+    channelId: z.string().min(1).optional(),
+    /** Voice channel name, e.g. "Lobby A" (case-insensitive). */
+    query: z.string().min(1).max(100).optional(),
+  })
+  .refine((d) => Boolean(d.channelId?.trim() || d.query?.trim()), {
+    message: "Provide channelId or query (voice channel name)",
+  });
+
 export const discordVoiceJoinSchema = z.object({
   guildId: z.string().min(1),
   channelId: z.string().min(1),
 });
+
+export const discordVoiceSpeakParamsSchema = z
+  .object({
+    guildId: z.string().min(1).optional(),
+    channelId: z.string().min(1).optional(),
+    query: z.string().min(1).max(100).optional(),
+    text: z.string().min(1).max(4000),
+    audioBase64: z.string().optional(),
+    mimeType: z.string().optional(),
+  })
+  .refine((d) => Boolean(d.channelId?.trim() || d.query?.trim()), {
+    message: "Provide channelId or query (voice channel name)",
+  });
 
 export const discordVoiceSpeakSchema = z.object({
   guildId: z.string().min(1),
@@ -125,6 +155,13 @@ export const discordVoiceSpeakSchema = z.object({
   /** Optional pre-encoded audio (base64 opus/pcm) from controller TTS module. */
   audioBase64: z.string().optional(),
   mimeType: z.string().optional(),
+});
+
+export const discordVoiceAwaitSilenceSchema = z.object({
+  guildId: z.string().min(1),
+  channelId: z.string().min(1),
+  minSilentMs: z.number().int().min(100).max(10_000).default(700),
+  maxWaitMs: z.number().int().min(1000).max(600_000).default(120_000),
 });
 
 export const discordVoiceTranscriptSchema = z.object({

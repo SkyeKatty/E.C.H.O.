@@ -3,8 +3,8 @@ export function formatDiscordLoginError(err: unknown): Error {
   if (/disallowed intents/i.test(raw)) {
     return new Error(
       'Discord rejected the bot connection: "Used disallowed intents". ' +
-        'Open https://discord.com/developers/applications → your app → Bot → Privileged Gateway Intents and turn ON "Message Content Intent", then Save Changes and retry. ' +
-        'If you cannot enable it, turn on "Mentions only mode" in ECHO Discord settings (the bot will only see @mentions, not normal channel messages).',
+        'Open https://discord.com/developers/applications → your app → Bot → Privileged Gateway Intents. Turn ON "Message Content Intent" unless ECHO "Mentions only mode" is enabled. ' +
+        'If you enabled "Server members intent" in ECHO settings, also turn ON "Server Members Intent" in the portal. Save Changes and restart the Discord module.',
     );
   }
   if (/gateway did not become ready|websocket may be blocked/i.test(raw)) {

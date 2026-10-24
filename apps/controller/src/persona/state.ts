@@ -1,3 +1,5 @@
+import type { SystemEvent } from "./event-log.js";
+
 export type PersonaOperationalState = {
   name: string;
   activeCharacterId: string | null;
@@ -59,6 +61,14 @@ export type SystemSnapshot = {
     moduleAvailable: boolean;
     moduleId: string | null;
   };
+  tts?: {
+    moduleAvailable: boolean;
+    moduleId: string | null;
+  };
+  stt?: {
+    moduleAvailable: boolean;
+    moduleId: string | null;
+  };
   character: {
     activeCharacterId: string | null;
     activeCharacterName: string | null;
@@ -66,38 +76,5 @@ export type SystemSnapshot = {
   recentEvents: SystemEvent[];
 };
 
-export type SystemEvent = {
-  id: string;
-  timestamp: string;
-  type: string;
-  summary: string;
-  moduleId?: string;
-};
-
-export class EventLog {
-  private events: SystemEvent[] = [];
-  private readonly maxSize: number;
-
-  constructor(maxSize = 100) {
-    this.maxSize = maxSize;
-  }
-
-  append(event: Omit<SystemEvent, "id" | "timestamp"> & { timestamp?: string }): SystemEvent {
-    const record: SystemEvent = {
-      id: crypto.randomUUID(),
-      timestamp: event.timestamp ?? new Date().toISOString(),
-      type: event.type,
-      summary: event.summary,
-      moduleId: event.moduleId,
-    };
-    this.events.unshift(record);
-    if (this.events.length > this.maxSize) {
-      this.events.length = this.maxSize;
-    }
-    return record;
-  }
-
-  list(): SystemEvent[] {
-    return [...this.events];
-  }
-}
+export type { SystemEvent } from "./event-log.js";
+export { EventLog, eventSeverityForType } from "./event-log.js";

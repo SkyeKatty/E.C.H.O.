@@ -13,6 +13,7 @@ persona:
   name: Echo
   reactiveOnly: true
   # identity, communicationStyle, behavioralGuidelines: optional multi-line strings
+  # Use {{characterName}} in guidelines/cards — expanded to the active character's name at runtime.
 
 cognition:
   # llmAdapter: module   # default — run pnpm dev:llm
@@ -67,6 +68,8 @@ memoryModule:
 logging:
   level: info
   pretty: true
+  # Persistent dashboard log → data/events/events.jsonl (Events tab)
+  eventLogMaxPersisted: 10000
 
 modules:
   heartbeatIntervalMs: 15000

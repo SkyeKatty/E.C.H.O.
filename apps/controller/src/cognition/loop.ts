@@ -1,4 +1,5 @@
 import type { ChatMessage, LLMProvider, StreamEvent, ToolDefinition } from "@echo/llm";
+import { describeOperationalError } from "../util/operational-error.js";
 
 export type ModuleInvoker = (
   capabilityId: string,
@@ -21,6 +22,8 @@ export type CognitiveTraceEvent =
   | { type: "model.delta"; delta: string }
   | { type: "tool.start"; name: string; capabilityId: string }
   | { type: "tool.end"; name: string; capabilityId: string; ok: boolean }
+  | { type: "tool.error"; name: string; capabilityId: string; detail: string }
+  | { type: "loop.error"; detail: string }
   | { type: "model.end"; usage?: { totalTokens?: number } };
 
 export type CognitiveLoopResult = {
@@ -51,9 +54,21 @@ export async function runCognitiveLoop(input: {
     options.onEvent?.({ type: "model.start", iteration });
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), options.requestTimeoutMs);
+    const timeout = setTimeout(() => {
+      controller.abort(
+        new DOMException(
+          `LLM iteration timed out after ${options.requestTimeoutMs}ms`,
+          "TimeoutError",
+        ),
+      );
+    }, options.requestTimeoutMs);
     const linked = input.signal;
-    const onAbort = () => controller.abort();
+    const onAbort = () => {
+      const reason =
+        linked?.reason ??
+        new DOMException("Chat task cancelled (parent abort signal)", "AbortError");
+      controller.abort(reason);
+    };
     linked?.addEventListener("abort", onAbort);
 
     let result;
@@ -92,6 +107,13 @@ export async function runCognitiveLoop(input: {
           signal: controller.signal,
         });
       }
+    } catch (err) {
+      const { message, logLine } = describeOperationalError(err, {
+        operation: "llm.iteration",
+        timeoutMs: options.requestTimeoutMs,
+      });
+      options.onEvent?.({ type: "loop.error", detail: logLine });
+      throw new Error(message, { cause: err instanceof Error ? err : undefined });
     } finally {
       clearTimeout(timeout);
       linked?.removeEventListener("abort", onAbort);
@@ -131,9 +153,12 @@ export async function runCognitiveLoop(input: {
         toolContent = JSON.stringify(toolResult);
       } catch (err) {
         ok = false;
-        toolContent = JSON.stringify({
-          error: err instanceof Error ? err.message : "Tool execution failed",
+        const { message, logLine } = describeOperationalError(err, {
+          operation: "module.invoke",
+          capabilityId,
         });
+        options.onEvent?.({ type: "tool.error", name: call.function.name, capabilityId, detail: logLine });
+        toolContent = JSON.stringify({ error: message });
       }
       options.onEvent?.({ type: "tool.end", name: call.function.name, capabilityId, ok });
 

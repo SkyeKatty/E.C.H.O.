@@ -1,0 +1,23 @@
+[project]
+name = "echo-fish-speech-server"
+version = "0.1.0"
+description = "ECHO Fish TTS server — pip-installed Fish Speech + automatic Hugging Face weights"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+runtime = [
+  "huggingface_hub>=0.26.0",
+]
+
+[project.scripts]
+echo-fish-speech-server = "echo_fish_speech_server.__main__:main"
+echo-fish-server = "echo_fish_speech_server.__main__:main"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["echo_fish_speech_server*"]

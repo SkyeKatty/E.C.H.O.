@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { SystemSnapshot } from "../types";
+import type { SystemEvent, SystemSnapshot } from "../types";
 
 type ConnectionState = "connecting" | "connected" | "disconnected";
 
@@ -15,6 +15,7 @@ function dashboardWsUrl(): string {
 
 export function useDashboardSocket() {
   const [snapshot, setSnapshot] = useState<SystemSnapshot | null>(null);
+  const [liveEvent, setLiveEvent] = useState<SystemEvent | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
 
@@ -37,9 +38,15 @@ export function useDashboardSocket() {
       ws.onmessage = (ev) => {
         if (disposed) return;
         try {
-          const msg = JSON.parse(ev.data as string) as { type: string; data?: SystemSnapshot };
+          const msg = JSON.parse(ev.data as string) as {
+            type: string;
+            data?: SystemSnapshot | SystemEvent;
+          };
           if (msg.type === "system.snapshot" && msg.data) {
-            setSnapshot(msg.data);
+            setSnapshot(msg.data as SystemSnapshot);
+          }
+          if (msg.type === "system.event" && msg.data) {
+            setLiveEvent(msg.data as SystemEvent);
           }
         } catch {
           setError("Failed to parse dashboard update");
@@ -75,5 +82,5 @@ export function useDashboardSocket() {
     };
   }, []);
 
-  return { snapshot, connection, error };
+  return { snapshot, liveEvent, connection, error };
 }

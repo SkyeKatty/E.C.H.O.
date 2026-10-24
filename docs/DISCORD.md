@@ -29,12 +29,27 @@ sequenceDiagram
   M->>D: channel.send
 ```
 
-- **Session id** for memory: stable UUID derived from `guildId + channelId` (see `discordTextSessionId`).
+- **Session id** for memory: stable UUID per **text channel** (`discordTextSessionId`) and a separate id per **voice channel** (`discordVoiceSessionId`) so text chat and voice STT turns do not share history or TTS.
+- **Text replies** never use sentence TTS; **voice STT** replies use the TTS pipeline only (LLM cannot call `tts.speech.*` or `discord.voice.speak` on text turns).
 - **Speaker key**: `discord:{guildId}:{userId}` for Phase 3 memory participants.
 - **Always respond** when the bot is @mentioned or the user replies to the bot’s message.
 - **Relevance gate** (default on): small structured LLM pass using the active character card — skips side chatter the persona would ignore.
 - **Per-message gate**: each inbound message gets a relevance check (unless @mention / reply-to-bot).
 - **Skipped backlog**: messages the persona ignores are kept (default cap **12**) and included in the **next** reply when they choose to speak.
+
+## Voice join failures (“operation was aborted” at ~20s)
+
+If the Events log shows `discord.voice.join failed: The operation was aborted` about **20 seconds** after `tool.start`, that is usually **`@discordjs/voice` timing out** while waiting for `VoiceConnectionStatus.Ready` — not the dashboard cancelling chat.
+
+Checklist:
+
+1. Bot role: **Connect** + **Speak** on the voice channel.
+2. **UDP** outbound allowed (Windows firewall / VPN) — Discord voice uses UDP after the gateway handshake.
+3. Discord module deps: **encryption** + **opus** (`pnpm install` from repo root). Under pnpm, voice encryption uses **`@stablelib/xchacha20poly1305`** (ESM `libsodium-wrappers` is unreliable). On boot the discord module logs a **Voice dependency report** — `@stablelib/xchacha20poly1305` should show a version, not `not found`.
+4. Discord module console: **`signalling`** then hang/`destroyed` without **`ready`** often means **UDP blocked** (firewall/VPN) after voice WS setup; **`connecting` → `signalling`** only with no `ready` matches that pattern.
+5. Look for `[discord] voice connection state → …` or `voice connection destroyed … reason=`.
+
+ECHO uses a **60s** Ready wait and returns an explicit error if Ready is never reached.
 
 ## Voice (v1 scaffold)
 
@@ -43,10 +58,24 @@ sequenceDiagram
 | Auto-join voice-enabled channels | Implemented |
 | Barge-in (stop bot when humans speak) | Implemented (simulated speech duration until TTS audio is wired) |
 | Interrupt annoyance reaction | Implemented after N interrupts (config threshold) |
-| STT per speaker | **Planned** — `@echo/voice-contract` defines `stt.transcribe.stream`; module will POST `/api/v1/discord/voice/transcript` |
-| TTS playback | **Planned** — controller will call `tts.synthesize` then `discord.voice.speak` with `audioBase64` |
+| STT per speaker | **Implemented** — Discord streams PCM to `pnpm dev:stt`; transcripts hit `/api/v1/discord/voice/transcript` (see [STT.md](./STT.md)) |
+| TTS playback | **Implemented** — TTS module synthesizes → controller routes to `discord.voice.speak` with `audioBase64`; Discord module plays via `@discordjs/voice` + FFmpeg (wav/mp3) |
 
-The Discord module **never talks over humans**: when someone speaks while output is active, playback is cancelled and the controller is notified via `/api/v1/discord/voice/interrupt`.
+The Discord module **never talks over humans**: when someone speaks while output is active, playback is cancelled and the controller is notified via `/api/v1/discord/voice/interrupt`. Before starting a voice reply, ECHO waits for the channel to be quiet (Discord speaking map + active STT capture); if someone is still talking, the LLM turn is deferred and TTS chunks are not played until silence returns.
+
+## Versions
+
+The Discord module tracks current **discord.js** and **@discordjs/voice** releases (see `modules/discord/package.json`). As of the latest ECHO stack:
+
+| Package | Role |
+|---------|------|
+| `discord.js` ^14.27 | Gateway client, messages, voice state |
+| `@discordjs/voice` ^0.19 | Voice connect, receive, playback (includes **DAVE** via `@snazzah/davey`) |
+| `@discordjs/opus` | Preferred opus codec |
+| `opusscript` | Opus fallback (pure JS) |
+| `@stablelib/xchacha20poly1305` | Voice encryption fallback when libsodium ESM fails under pnpm |
+
+**Node.js ≥ 22.12** is required for `@discordjs/voice` 0.19 (`node -v` before `pnpm dev:discord`).
 
 ## Setup
 

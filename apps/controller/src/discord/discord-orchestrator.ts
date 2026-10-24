@@ -8,8 +8,10 @@ import type { DiscordModuleService } from "./discord-module-service.js";
 import type { DiscordSettingsStore } from "./settings-store.js";
 import { discordParticipant } from "./participant.js";
 import { registerDiscordSession } from "./session-delivery.js";
-import { discordTextSessionId } from "./session-id.js";
+import { discordTextSessionId, discordVoiceSessionId } from "./session-id.js";
 import { evaluateDiscordRelevance } from "./relevance-gate.js";
+import { discordVoiceSink } from "../tts/speech-origin.js";
+import { describeOperationalError } from "../util/operational-error.js";
 
 type InboundMessage = z.infer<typeof discordInboundMessageSchema>;
 
@@ -29,10 +31,18 @@ type ChannelState = {
   decisionChain: Promise<void>;
   /** Outbound replies — one at a time per channel, not blocked on gate latency. */
   replyChain: Promise<void>;
+  /** Drop duplicate Discord MESSAGE_CREATE deliveries. */
+  handledInboundIds: Set<string>;
+  /** Suppress identical back-to-back outbound text (tool + auto-reply races). */
+  lastOutbound?: { content: string; atMs: number };
+  /** Incremented when a new reply is scheduled; stale generations skip send. */
+  replyGeneration: number;
 };
 
 function formatInboundLine(m: InboundMessage): string {
-  let line = `${m.displayName}: ${m.content}`.trim();
+  const idPrefix =
+    m.userId === "system" || m.userId === "persona" ? "" : `[id:${m.messageId}] `;
+  let line = `${idPrefix}${m.displayName}: ${m.content}`.trim();
   if (m.replyTo) {
     line += `\n  ↳ replying to ${m.replyTo.authorDisplayName}: "${m.replyTo.content.replace(/\n/g, " ").slice(0, 500)}"`;
   }
@@ -94,9 +104,13 @@ function trimInboundBuffer(messages: InboundMessage[], max: number): void {
   }
 }
 
+const MIN_VOICE_TRANSCRIPT_CHARS = 2;
+
 export class DiscordOrchestrator {
   private readonly channels = new Map<string, ChannelState>();
   private readonly voiceInterruptCounts = new Map<string, number>();
+  /** One voice STT → LLM → TTS turn at a time per voice channel. */
+  private readonly voiceTurnChains = new Map<string, Promise<void>>();
 
   constructor(
     private readonly settings: DiscordSettingsStore,
@@ -124,6 +138,8 @@ export class DiscordOrchestrator {
         pendingActivity: [],
         decisionChain: Promise.resolve(),
         replyChain: Promise.resolve(),
+        handledInboundIds: new Set(),
+        replyGeneration: 0,
       };
       this.channels.set(key, state);
     }
@@ -153,8 +169,19 @@ export class DiscordOrchestrator {
         pendingActivity: [],
         decisionChain: Promise.resolve(),
         replyChain: Promise.resolve(),
+        handledInboundIds: new Set(),
+        replyGeneration: 0,
       };
       this.channels.set(key, state);
+    }
+
+    if (state.handledInboundIds.has(msg.messageId)) {
+      return;
+    }
+    state.handledInboundIds.add(msg.messageId);
+    if (state.handledInboundIds.size > 256) {
+      state.handledInboundIds.clear();
+      state.handledInboundIds.add(msg.messageId);
     }
 
     state.decisionChain = state.decisionChain
@@ -178,6 +205,7 @@ export class DiscordOrchestrator {
       discordTextSessionId(msg.guildId, msg.channelId),
       msg.guildId,
       msg.channelId,
+      "text",
     );
 
     const maxBacklog = cfg.batchMaxMessages;
@@ -252,13 +280,13 @@ export class DiscordOrchestrator {
     state.sinceLastReply = [];
     state.recentInbound.push(msg);
     trimInboundBuffer(state.recentInbound, maxBacklog + PRIOR_BEFORE_BACKLOG + 16);
+    const generation = ++state.replyGeneration;
     state.replyChain = state.replyChain
-      .then(() => this.respondToBatch(state, batch, gateReason))
+      .then(() => this.respondToBatch(state, batch, gateReason, generation))
       .catch((err) => {
-        this.eventLog.append({
-          type: "discord.error",
-          summary: `Discord reply failed: ${err instanceof Error ? err.message : "unknown"}`,
-        });
+        const { logLine } = describeOperationalError(err, { operation: "discord.reply" });
+        this.eventLog.append({ type: "discord.error", summary: logLine });
+        console.error("[discord-orchestrator]", logLine);
       });
   }
 
@@ -295,6 +323,7 @@ export class DiscordOrchestrator {
     state: ChannelState,
     batch: InboundMessage[],
     gateReason: string,
+    generation: number,
   ): Promise<void> {
     const last = batch[batch.length - 1]!;
     const batchedUserText = formatMessagesForPrompt(batch);
@@ -313,6 +342,7 @@ export class DiscordOrchestrator {
       sessionId,
       speaker,
       stream: false,
+      speechOutput: { disable: true },
     });
 
     if (!this.discord.isAvailable()) {
@@ -323,27 +353,58 @@ export class DiscordOrchestrator {
       return;
     }
 
-    const content = result.reply.slice(0, 2000);
+    if (generation !== state.replyGeneration) {
+      this.eventLog.append({
+        type: "discord.skip",
+        summary: `Dropped stale Discord reply (superseded by newer message) → #${last.channelId}`,
+      });
+      return;
+    }
+
+    const content = result.reply.trim();
+    if (!content) {
+      this.eventLog.append({
+        type: "discord.outbound",
+        summary: `No text reply to #${last.channelId} (tools/reactions only)`,
+      });
+      return;
+    }
+
+    const outbound = content.slice(0, 2000);
+    const now = Date.now();
+    if (
+      state.lastOutbound &&
+      state.lastOutbound.content === outbound &&
+      now - state.lastOutbound.atMs < 90_000
+    ) {
+      this.eventLog.append({
+        type: "discord.warn",
+        summary: `Skipped duplicate Discord post to #${last.channelId} (same text within 90s)`,
+      });
+      return;
+    }
+
     const sent = (await this.discord.sendMessage({
       channelId: last.channelId,
-      content,
+      content: outbound,
       replyToMessageId: last.messageId,
     })) as { messageId?: string };
 
     if (sent.messageId) {
+      state.lastOutbound = { content: outbound, atMs: now };
       this.recordPersonaReply(state, {
         messageId: sent.messageId,
         guildId: last.guildId,
         channelId: last.channelId,
         displayName: character?.name ?? "Persona",
-        content,
+        content: outbound,
         after: last,
       });
     }
 
     this.eventLog.append({
       type: "discord.outbound",
-      summary: `Sent reply to #${last.channelId} (${result.reply.length} chars)`,
+      summary: `Sent reply to #${last.channelId} (${outbound.length} chars)`,
     });
   }
 
@@ -360,21 +421,80 @@ export class DiscordOrchestrator {
     const cfg = this.settings.load();
     if (!cfg.enabled) return;
 
-    const speaker = discordParticipant(input.guildId, input.userId, input.displayName);
-    const sessionId = discordTextSessionId(input.guildId, input.channelId);
+    const trimmed = input.text.trim();
+    if (trimmed.length < MIN_VOICE_TRANSCRIPT_CHARS) return;
 
-    const result = await this.engine.chat({
-      message: `[voice] ${input.text}`,
-      sessionId,
-      speaker,
-      stream: false,
+    const voiceKey = `${input.guildId}:${input.channelId}`;
+    const run = this.voiceTurnChains.get(voiceKey) ?? Promise.resolve();
+    const turn = run.then(() => this.runVoiceTranscriptTurn(input, trimmed));
+    this.voiceTurnChains.set(
+      voiceKey,
+      turn.catch(() => undefined),
+    );
+    await turn;
+  }
+
+  private async runVoiceTranscriptTurn(
+    input: {
+      guildId: string;
+      channelId: string;
+      userId: string;
+      displayName: string;
+    },
+    trimmed: string,
+  ): Promise<void> {
+    this.eventLog.append({
+      type: "discord.voice",
+      summary: `${input.displayName}: ${trimmed.slice(0, 120)}${trimmed.length > 120 ? "…" : ""}`,
     });
 
+    const sessionId = discordVoiceSessionId(input.guildId, input.channelId);
+    registerDiscordSession(sessionId, input.guildId, input.channelId, "voice");
+
     if (this.discord.isAvailable()) {
-      await this.discord.speakInVoice({
+      const silence = await this.discord.awaitVoiceSilence({
         guildId: input.guildId,
         channelId: input.channelId,
-        text: result.reply,
+        minSilentMs: 700,
+        maxWaitMs: 120_000,
+      });
+      if (!silence.ok) {
+        this.eventLog.append({
+          type: "discord.voice",
+          summary: `${input.displayName} still speaking after wait — LLM will run; TTS waits for silence`,
+        });
+      }
+    }
+
+    const speaker = discordParticipant(input.guildId, input.userId, input.displayName);
+
+    let result: { reply: string };
+    try {
+      result = await this.engine.chat({
+        message: trimmed,
+        sessionId,
+        speaker,
+        stream: true,
+        speechOutput: {
+          force: true,
+          sink: discordVoiceSink(input.guildId, input.channelId),
+          streamId: `voice-${Date.now()}`,
+        },
+      });
+    } catch (err) {
+      const { logLine } = describeOperationalError(err, {
+        operation: "discord.voice.transcript",
+        sessionId,
+      });
+      this.eventLog.append({ type: "discord.error", summary: logLine });
+      console.error("[discord-orchestrator]", logLine);
+      return;
+    }
+
+    if (this.discord.isAvailable() && result.reply.trim()) {
+      this.eventLog.append({
+        type: "discord.voice",
+        summary: `Voice STT turn (${result.reply.length} chars) — TTS handles playback when module is connected`,
       });
     }
   }
@@ -406,13 +526,15 @@ export class DiscordOrchestrator {
     if (count >= cfg.voiceInterruptAnnoyanceThreshold && this.engine.isChatAvailable()) {
       const character = this.characters.getActive();
       if (!character) return;
-      const sessionId = discordTextSessionId(input.guildId, input.channelId);
       const speaker = discordParticipant(input.guildId, input.userId, input.displayName);
+      const sessionId = discordVoiceSessionId(input.guildId, input.channelId);
+      registerDiscordSession(sessionId, input.guildId, input.channelId, "voice");
       const result = await this.engine.chat({
         message: `[voice] ${input.displayName} keeps talking over you while you were speaking. React briefly in character to being interrupted.`,
         sessionId,
         speaker,
         stream: false,
+        speechOutput: { disable: true },
       });
       if (this.discord.isAvailable()) {
         await this.discord.speakInVoice({

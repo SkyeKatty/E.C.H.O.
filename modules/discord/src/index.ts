@@ -2,6 +2,7 @@ import os from "node:os";
 import { ModuleClient } from "@echo/module-sdk";
 import { DISCORD_CAPABILITIES } from "@echo/discord-contract";
 import { DiscordRuntime, capabilityList } from "./runtime.js";
+import { ensureVoiceCryptoDeps } from "./voice-deps.js";
 
 const controllerWs = process.env.ECHO_CONTROLLER_MODULE_WS ?? "ws://127.0.0.1:8787/ws/modules";
 const controllerHttp =
@@ -73,4 +74,9 @@ client.registerHandler(DISCORD_CAPABILITIES.VOICE_SPEAK_CANCEL, (_env, params) =
   runtime.cancelSpeak(params as { guildId: string; channelId: string }),
 );
 
+client.registerHandler(DISCORD_CAPABILITIES.VOICE_AWAIT_SILENCE, (_env, params) =>
+  runtime.awaitVoiceSilence(params),
+);
+
+await ensureVoiceCryptoDeps();
 await client.start();

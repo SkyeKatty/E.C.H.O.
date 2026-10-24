@@ -5,10 +5,14 @@ import {
   type discordInboundMessageSchema,
 } from "@echo/discord-contract";
 import type { z } from "zod";
+import type { SttBridgeClient } from "./voice-stt-bridge.js";
 
 type InboundMessage = z.infer<typeof discordInboundMessageSchema>;
 
 export class ControllerClient {
+  private sttModuleAvailable = false;
+  private sttStatusCheckedAt = 0;
+
   constructor(
     private readonly baseUrl: string,
     private readonly authToken?: string,
@@ -72,6 +76,80 @@ export class ControllerClient {
       headers: this.headers(),
       body: JSON.stringify(payload),
     });
+  }
+
+  async refreshSttAvailability(): Promise<boolean> {
+    const now = Date.now();
+    if (now - this.sttStatusCheckedAt < 15_000) {
+      return this.sttModuleAvailable;
+    }
+    this.sttStatusCheckedAt = now;
+    try {
+      const res = await fetch(`${this.baseUrl}/api/v1/stt/status`);
+      if (!res.ok) return this.sttModuleAvailable;
+      const data = (await res.json()) as { moduleAvailable?: boolean };
+      this.sttModuleAvailable = Boolean(data.moduleAvailable);
+    } catch {
+      this.sttModuleAvailable = false;
+    }
+    return this.sttModuleAvailable;
+  }
+
+  createSttBridgeClient(): SttBridgeClient {
+    return {
+      isEnabled: () => this.sttModuleAvailable,
+      sessionStart: (payload) => this.postSttSessionStart(payload),
+      audioAppend: (payload) => this.postSttAudio(payload),
+      sessionEnd: (payload) => this.postSttSessionEnd(payload),
+    };
+  }
+
+  private async postSttSessionStart(payload: {
+    sessionId: string;
+    guildId: string;
+    channelId: string;
+    userId: string;
+    displayName: string;
+    sampleRate: number;
+    channels: number;
+  }): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/v1/stt/session/start`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`stt session start failed: ${res.status} ${err}`);
+    }
+  }
+
+  private async postSttAudio(payload: {
+    sessionId: string;
+    sequence: number;
+    pcmBase64: string;
+  }): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/v1/stt/audio`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ ...payload, encoding: "pcm_s16le" }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`stt audio failed: ${res.status} ${err}`);
+    }
+  }
+
+  private async postSttSessionEnd(payload: { sessionId: string }): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/v1/stt/session/end`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`stt session end failed: ${res.status} ${err}`);
+    }
   }
 
   async fetchSettings(): Promise<{ settings: Partial<DiscordRuntimeConfig> & { botTokenConfigured?: boolean } }> {

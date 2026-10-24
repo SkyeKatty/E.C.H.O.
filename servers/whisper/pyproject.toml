@@ -1,0 +1,25 @@
+[project]
+name = "echo-whisper-server"
+version = "0.1.0"
+description = "ECHO in-house OpenAI-compatible Whisper STT HTTP server"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+runtime = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "python-multipart>=0.0.12",
+  "faster-whisper>=1.1.0",
+]
+
+[project.scripts]
+echo-whisper-server = "echo_whisper_server.__main__:main"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["echo_whisper_server*"]

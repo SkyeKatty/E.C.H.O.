@@ -5,6 +5,10 @@ import {
   Partials,
   type Guild,
   type Message,
+  type MessageReaction,
+  type PartialMessageReaction,
+  type PartialUser,
+  type User,
   type VoiceBasedChannel,
 } from "discord.js";
 import {
@@ -15,8 +19,9 @@ import {
   discordMessageReactSchema,
   discordMessageReactionsGetSchema,
   discordMessageSendSchema,
-  discordVoiceJoinSchema,
-  discordVoiceSpeakSchema,
+  discordVoiceAwaitSilenceSchema,
+  discordVoiceJoinParamsSchema,
+  discordVoiceSpeakParamsSchema,
   type DiscordRuntimeConfig,
 } from "@echo/discord-contract";
 import {
@@ -25,6 +30,9 @@ import {
   discordMessageReactToolSchema,
   discordMessageReactionsGetToolSchema,
   discordMessageSendToolSchema,
+  discordVoiceJoinToolSchema,
+  discordVoiceLeaveToolSchema,
+  discordVoiceSpeakToolSchema,
 } from "@echo/discord-contract";
 import { ControllerClient } from "./controller-client.js";
 import { discordConnectionFingerprint, needsDiscordReconnect } from "./config-fingerprint.js";
@@ -35,6 +43,8 @@ import {
   loginDiscordClient,
 } from "./gateway-connect.js";
 import { VoiceManager } from "./voice-manager.js";
+import { VoiceSttBridge } from "./voice-stt-bridge.js";
+import { VoiceOccupancy } from "./voice-occupancy.js";
 
 export type GatewayStatus = "offline" | "connecting" | "online" | "error";
 
@@ -48,11 +58,28 @@ export class DiscordRuntime {
   private gatewayStatus: GatewayStatus = "offline";
   private lastGatewayError: string | null = null;
   private lastAppliedTokenFingerprint: string | null = null;
-  private readonly voice = new VoiceManager();
+  private readonly voiceOccupancy = new VoiceOccupancy();
+  private readonly voice = new VoiceManager(this.voiceOccupancy);
   private readonly controller: ControllerClient;
+  private readonly sttBridge: VoiceSttBridge;
 
   constructor(controllerBaseUrl: string, authToken?: string) {
     this.controller = new ControllerClient(controllerBaseUrl, authToken);
+    this.sttBridge = new VoiceSttBridge(this.controller.createSttBridgeClient(), this.voiceOccupancy);
+  }
+
+  private async joinVoiceChannel(
+    guild: Guild,
+    channel: VoiceBasedChannel,
+    onInterrupt: (payload: {
+      guildId: string;
+      channelId: string;
+      userId: string;
+      displayName: string;
+    }) => void,
+  ): Promise<void> {
+    await this.controller.refreshSttAvailability();
+    await this.voice.join(guild, channel, onInterrupt, this.sttBridge);
   }
 
   getStatus() {
@@ -162,11 +189,13 @@ export class DiscordRuntime {
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.GuildMessageReactions,
       GatewayIntentBits.GuildEmojisAndStickers,
-      GatewayIntentBits.GuildMembers,
       GatewayIntentBits.GuildVoiceStates,
     ];
     if (!cfg.mentionsOnlyMode) {
       intents.push(GatewayIntentBits.MessageContent);
+    }
+    if (cfg.serverMembersIntent) {
+      intents.push(GatewayIntentBits.GuildMembers);
     }
 
     const client = new Client({
@@ -197,12 +226,10 @@ export class DiscordRuntime {
 
       const channel = newState.channel;
       if (!channel || !channel.isVoiceBased()) return;
-      void this.voice
-        .join(newState.guild, channel as VoiceBasedChannel, (payload) => {
-          if (cfg.voiceBargeInEnabled === false) return;
-          void this.controller.postVoiceInterrupt(payload);
-        })
-        .catch((err) => {
+      void this.joinVoiceChannel(newState.guild, channel as VoiceBasedChannel, (payload) => {
+        if (cfg.voiceBargeInEnabled === false) return;
+        void this.controller.postVoiceInterrupt(payload);
+      }).catch((err) => {
         console.warn("[discord] auto join voice failed", err);
       });
     });
@@ -288,8 +315,8 @@ export class DiscordRuntime {
   }
 
   private async onReactionAdd(
-    reaction: import("discord.js").MessageReaction,
-    user: import("discord.js").User | import("discord.js").PartialUser,
+    reaction: MessageReaction | PartialMessageReaction,
+    user: User | PartialUser,
   ): Promise<void> {
     if (user.bot) return;
     if (reaction.partial) {
@@ -424,6 +451,57 @@ export class DiscordRuntime {
     return { matches: matches.slice(0, 5) };
   }
 
+  private normalizeVoiceJoinParams(params: unknown): unknown {
+    if (typeof params !== "object" || params === null) return params;
+    const base = { ...(params as Record<string, unknown>) };
+    if (typeof base.input === "string" && !base.query && !base.channelId) {
+      base.query = base.input;
+      delete base.input;
+    }
+    return base;
+  }
+
+  private async resolveVoiceChannel(
+    guildId: string,
+    channelId?: string,
+    query?: string,
+  ): Promise<VoiceBasedChannel> {
+    const client = this.client;
+    if (!client) throw new Error("Discord client not ready");
+
+    if (channelId?.trim()) {
+      const channel = await client.channels.fetch(channelId.trim());
+      if (!channel?.isVoiceBased()) throw new Error("Voice channel not found");
+      return channel;
+    }
+
+    const q = query!.trim().toLowerCase();
+    const guild = await this.fetchGuild(guildId);
+    await guild.channels.fetch().catch(() => undefined);
+
+    const voiceChannels = guild.channels.cache.filter((ch) => ch.isVoiceBased());
+    let partial: VoiceBasedChannel | undefined;
+    for (const ch of voiceChannels.values()) {
+      if (!ch.isVoiceBased()) continue;
+      const name = ch.name.toLowerCase();
+      if (name === q) return ch;
+      if (!partial && name.includes(q)) partial = ch;
+    }
+    if (partial) return partial;
+    throw new Error(`No voice channel matching "${query}" in guild ${guild.name}`);
+  }
+
+  private async resolveVoiceJoinTarget(params: unknown): Promise<{
+    guildId: string;
+    channelId: string;
+    channel: VoiceBasedChannel;
+  }> {
+    const body = discordVoiceJoinParamsSchema.parse(this.normalizeVoiceJoinParams(params));
+    const guildId = this.resolveGuildId(body.guildId);
+    const channel = await this.resolveVoiceChannel(guildId, body.channelId, body.query);
+    return { guildId: channel.guild.id, channelId: channel.id, channel };
+  }
+
   async reactToMessage(params: unknown): Promise<{ ok: true }> {
     const body = discordMessageReactSchema.parse(params);
     const client = this.client;
@@ -502,22 +580,21 @@ export class DiscordRuntime {
     return { messageId: sent.id };
   }
 
-  async joinVoice(params: unknown): Promise<{ joined: boolean }> {
-    const body = discordVoiceJoinSchema.parse(params);
-    const client = this.client;
-    if (!client) throw new Error("Discord client not ready");
-    const channel = await client.channels.fetch(body.channelId);
-    if (!channel || !channel.isVoiceBased()) throw new Error("Voice channel not found");
-    await this.voice.join(channel.guild, channel, (payload) => {
+  async joinVoice(params: unknown): Promise<{ joined: boolean; guildId: string; channelId: string }> {
+    console.log("[discord] voice.join params:", JSON.stringify(this.normalizeVoiceJoinParams(params)));
+    const { channel, guildId, channelId } = await this.resolveVoiceJoinTarget(params);
+    console.log(`[discord] voice.join connecting → #${channel.name} (${channelId}) in ${channel.guild.name}`);
+    await this.joinVoiceChannel(channel.guild, channel, (payload) => {
       if (this.config?.voiceBargeInEnabled === false) return;
       void this.controller.postVoiceInterrupt(payload);
     });
-    return { joined: true };
+    console.log(`[discord] voice.join ready in #${channel.name}`);
+    return { joined: true, guildId, channelId };
   }
 
   async leaveVoice(params: unknown): Promise<{ left: boolean }> {
-    const body = discordVoiceJoinSchema.parse(params);
-    this.voice.leave(body.guildId, body.channelId);
+    const { guildId, channelId } = await this.resolveVoiceJoinTarget(params);
+    this.voice.leave(guildId, channelId);
     return { left: true };
   }
 
@@ -526,14 +603,30 @@ export class DiscordRuntime {
   }
 
   async speak(params: unknown): Promise<{ ok: boolean }> {
-    const body = discordVoiceSpeakSchema.parse(params);
-    await this.voice.speak(body.guildId, body.channelId, body.text, body.audioBase64);
+    const raw = discordVoiceSpeakParamsSchema.parse(this.normalizeVoiceJoinParams(params));
+    const guildId = this.resolveGuildId(raw.guildId);
+    const channel = await this.resolveVoiceChannel(guildId, raw.channelId, raw.query);
+    await this.voice.speak(
+      channel.guild.id,
+      channel.id,
+      raw.text,
+      raw.audioBase64,
+      raw.mimeType,
+    );
     return { ok: true };
   }
 
   async cancelSpeak(params: { guildId: string; channelId: string }): Promise<{ ok: boolean }> {
     this.voice.cancelSpeak(params.guildId, params.channelId);
     return { ok: true };
+  }
+
+  async awaitVoiceSilence(params: unknown): Promise<{ ok: boolean; timedOut?: boolean }> {
+    const body = discordVoiceAwaitSilenceSchema.parse(params);
+    return this.voice.awaitSilence(body.guildId, body.channelId, {
+      minSilentMs: body.minSilentMs,
+      maxWaitMs: body.maxWaitMs,
+    });
   }
 }
 
@@ -543,7 +636,7 @@ export const capabilityList = [
     name: "Discord health",
     description: "Connection status for the Discord bot",
     version: "1.0.0",
-    enabled: false,
+    enabled: true,
     supportsStreaming: false,
     supportsCancellation: false,
   },
@@ -552,7 +645,7 @@ export const capabilityList = [
     name: "Apply Discord config",
     description: "Login token, guild, channel policies",
     version: "1.0.0",
-    enabled: false,
+    enabled: true,
     supportsStreaming: false,
     supportsCancellation: false,
   },
@@ -561,7 +654,7 @@ export const capabilityList = [
     name: "Discord config status",
     description: "Runtime status without secrets",
     version: "1.0.0",
-    enabled: false,
+    enabled: true,
     supportsStreaming: false,
     supportsCancellation: false,
   },
@@ -598,7 +691,8 @@ export const capabilityList = [
   {
     id: DISCORD_CAPABILITIES.MESSAGE_REACT,
     name: "React to message",
-    description: "Add an emoji reaction to a Discord message",
+    description:
+      "Add an emoji reaction to a message in the active Discord channel (use [id:…] from chat lines; channelId optional)",
     version: "1.0.0",
     enabled: true,
     supportsStreaming: false,
@@ -618,18 +712,23 @@ export const capabilityList = [
   {
     id: DISCORD_CAPABILITIES.VOICE_JOIN,
     name: "Join voice channel",
+    description:
+      "Join a voice channel by name (query) or channelId. Guild is filled from Discord chat context.",
     version: "1.0.0",
     enabled: true,
     supportsStreaming: false,
     supportsCancellation: false,
+    inputSchema: discordVoiceJoinToolSchema,
   },
   {
     id: DISCORD_CAPABILITIES.VOICE_LEAVE,
     name: "Leave voice channel",
+    description: "Leave a voice channel the bot joined (same query/channelId as join).",
     version: "1.0.0",
     enabled: true,
     supportsStreaming: false,
     supportsCancellation: false,
+    inputSchema: discordVoiceLeaveToolSchema,
   },
   {
     id: DISCORD_CAPABILITIES.VOICE_STATUS,
@@ -642,15 +741,24 @@ export const capabilityList = [
   {
     id: DISCORD_CAPABILITIES.VOICE_SPEAK,
     name: "Speak in voice",
-    description: "Play TTS audio or simulated speech for barge-in",
+    description: "Play TTS audio or simulated speech in a joined voice channel",
     version: "1.0.0",
     enabled: true,
     supportsStreaming: false,
     supportsCancellation: true,
+    inputSchema: discordVoiceSpeakToolSchema,
   },
   {
     id: DISCORD_CAPABILITIES.VOICE_SPEAK_CANCEL,
     name: "Cancel voice speech",
+    version: "1.0.0",
+    enabled: true,
+    supportsStreaming: false,
+    supportsCancellation: false,
+  },
+  {
+    id: DISCORD_CAPABILITIES.VOICE_AWAIT_SILENCE,
+    name: "Await voice channel silence",
     version: "1.0.0",
     enabled: true,
     supportsStreaming: false,

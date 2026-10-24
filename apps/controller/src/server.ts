@@ -30,14 +30,26 @@ import { registerDiscordRoutes } from "./routes/discord.js";
 import { TimeModuleService } from "./time/time-module-service.js";
 import { TimeOrchestrator } from "./time/time-orchestrator.js";
 import { registerTimeRoutes } from "./routes/time.js";
+import { TtsModuleService } from "./tts/tts-module-service.js";
+import { TtsPlaybackRouter } from "./tts/tts-playback-router.js";
+import { registerTtsRoutes } from "./routes/tts.js";
+import { SttModuleService } from "./stt/stt-module-service.js";
+import { registerSttRoutes } from "./routes/stt.js";
+import { registerEventRoutes } from "./routes/events.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export async function buildServer(config: AppConfig) {
   const memoryCfg = config.memory ?? loadConfig().memory;
   const startedAt = Date.now();
-  const eventLog = new EventLog();
   const dashboardHub = new DashboardHub();
+  const eventLog = new EventLog({
+    maxPersisted: config.logging.eventLogMaxPersisted,
+    onAppend: (event) => {
+      publishSnapshot();
+      dashboardHub.broadcastEvent(event);
+    },
+  });
 
   const personaDef = personaDefinitionSchema.parse(config.persona);
   const characterStore = new CharacterCardStore();
@@ -64,6 +76,8 @@ export async function buildServer(config: AppConfig) {
   const discordStore = new DiscordSettingsStore();
   let discordService!: DiscordModuleService;
   let timeService!: TimeModuleService;
+  let ttsService!: TtsModuleService;
+  let sttService!: SttModuleService;
   let syncDiscordConfig!: () => Promise<void>;
 
   function buildSnapshot(): SystemSnapshot {
@@ -92,16 +106,29 @@ export async function buildServer(config: AppConfig) {
         moduleAvailable: timeService?.isAvailable() ?? false,
         moduleId: timeService?.isAvailable() ? timeService.getModuleId() : null,
       },
+      tts: {
+        moduleAvailable: ttsService?.isAvailable() ?? false,
+        moduleId: ttsService?.isAvailable() ? ttsService.getModuleId() : null,
+      },
+      stt: {
+        moduleAvailable: sttService?.isAvailable() ?? false,
+        moduleId: sttService?.isAvailable() ? sttService.getModuleId() : null,
+      },
       character: {
         activeCharacterId: persona.activeCharacterId,
         activeCharacterName: persona.name,
       },
-      recentEvents: eventLog.list(),
+      recentEvents: eventLog.list(200),
     };
   }
 
+  let snapshotCoalesceTimer: ReturnType<typeof setTimeout> | null = null;
   function publishSnapshot(): void {
-    dashboardHub.broadcast(buildSnapshot());
+    if (snapshotCoalesceTimer) return;
+    snapshotCoalesceTimer = setTimeout(() => {
+      snapshotCoalesceTimer = null;
+      dashboardHub.broadcast(buildSnapshot());
+    }, 40);
   }
 
   function syncPersonaFromActiveCharacter(): void {
@@ -214,6 +241,17 @@ export async function buildServer(config: AppConfig) {
     publishSnapshot();
   };
 
+  ttsService = new TtsModuleService(
+    registry,
+    moduleGateway,
+    config.cognition.moduleRequestTimeoutMs,
+  );
+  sttService = new SttModuleService(
+    registry,
+    moduleGateway,
+    config.cognition.moduleRequestTimeoutMs,
+  );
+
   const engine = new CognitiveEngine(
     llmBackend,
     registry,
@@ -235,6 +273,7 @@ export async function buildServer(config: AppConfig) {
     memoryService,
     memoryCurator,
     episodeCompactor,
+    ttsService,
   );
 
   discordService = new DiscordModuleService(
@@ -304,6 +343,19 @@ export async function buildServer(config: AppConfig) {
     orchestrator: timeOrchestrator,
     moduleAuthToken: config.controller.moduleAuthToken,
   });
+
+  const ttsPlaybackRouter = new TtsPlaybackRouter(discordService, eventLog);
+  registerTtsRoutes(app, {
+    tts: ttsService,
+    playback: ttsPlaybackRouter,
+    moduleAuthToken: config.controller.moduleAuthToken,
+  });
+  registerSttRoutes(app, {
+    stt: sttService,
+    moduleAuthToken: config.controller.moduleAuthToken,
+  });
+
+  await registerEventRoutes(app, eventLog);
 
   await registerCharacterRoutes(app, characterStore, () => {
     syncPersonaFromActiveCharacter();

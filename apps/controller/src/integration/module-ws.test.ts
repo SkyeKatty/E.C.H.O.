@@ -80,4 +80,76 @@ describe("module WebSocket integration", () => {
 
     ws.close();
   });
+
+  it("supersedes duplicate moduleId connections without marking module disconnected", async () => {
+    const wsUrl = `ws://127.0.0.1:${port}/ws/modules`;
+    const caps = [
+      {
+        id: "mock.echo",
+        name: "Echo",
+        version: "1.0.0",
+        enabled: true,
+        supportsStreaming: false,
+        supportsCancellation: true,
+      },
+    ];
+
+    const openAndRegister = async (suffix: string) => {
+      const ws = new WebSocket(wsUrl);
+      await new Promise<void>((resolve, reject) => {
+        ws.on("open", resolve);
+        ws.on("error", reject);
+      });
+      const registered = new Promise<ModuleRegisteredPayload>((resolve, reject) => {
+        ws.on("message", (data) => {
+          const msg = JSON.parse(data.toString()) as { type: string; payload: ModuleRegisteredPayload };
+          if (msg.type === MESSAGE_TYPES.MODULE_REGISTERED) resolve(msg.payload);
+        });
+        ws.on("error", reject);
+        setTimeout(() => reject(new Error("timeout")), 5000);
+      });
+      ws.send(
+        JSON.stringify(
+          createEnvelope({
+            type: MESSAGE_TYPES.MODULE_REGISTER,
+            source: `dup-mock-${suffix}`,
+            payload: {
+              moduleId: "dup-mock",
+              name: "Dup Mock",
+              version: "0.0.1",
+              protocolVersion: PROTOCOL_VERSION,
+              capabilities: caps,
+            },
+          }),
+        ),
+      );
+      const payload = await registered;
+      expect(payload.accepted).toBe(true);
+      return ws;
+    };
+
+    const ws1 = await openAndRegister("a");
+    const ws2 = await openAndRegister("b");
+
+    await new Promise((r) => setTimeout(r, 80));
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/status`);
+    const status = (await res.json()) as {
+      modules: { modules: { moduleId: string; connectionState: string }[] };
+    };
+    const mod = status.modules.modules.find((m) => m.moduleId === "dup-mock");
+    expect(mod?.connectionState).toBe("ready");
+
+    ws1.close();
+    await new Promise((r) => setTimeout(r, 80));
+
+    const res2 = await fetch(`http://127.0.0.1:${port}/api/v1/status`);
+    const status2 = (await res2.json()) as {
+      modules: { modules: { moduleId: string; connectionState: string }[] };
+    };
+    const mod2 = status2.modules.modules.find((m) => m.moduleId === "dup-mock");
+    expect(mod2?.connectionState).toBe("ready");
+
+    ws2.close();
+  });
 });

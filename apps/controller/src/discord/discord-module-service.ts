@@ -85,7 +85,20 @@ export class DiscordModuleService {
     audioBase64?: string;
     mimeType?: string;
   }): Promise<unknown> {
-    return this.invoke(DISCORD_CAPABILITIES.VOICE_SPEAK, params);
+    return this.invokeWithTimeout(DISCORD_CAPABILITIES.VOICE_SPEAK, params, 200_000);
+  }
+
+  async awaitVoiceSilence(params: {
+    guildId: string;
+    channelId: string;
+    minSilentMs?: number;
+    maxWaitMs?: number;
+  }): Promise<{ ok: boolean; timedOut?: boolean }> {
+    return this.invokeWithTimeout(
+      DISCORD_CAPABILITIES.VOICE_AWAIT_SILENCE,
+      params,
+      (params.maxWaitMs ?? 120_000) + 15_000,
+    ) as Promise<{ ok: boolean; timedOut?: boolean }>;
   }
 
   async cancelVoiceSpeak(params: { guildId: string; channelId: string }): Promise<unknown> {

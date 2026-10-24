@@ -90,6 +90,8 @@ const configSchema = z.object({
     .object({
       level: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
       pretty: z.boolean().default(true),
+      /** Max events written to data/events/events.jsonl (oldest trimmed). */
+      eventLogMaxPersisted: z.number().int().min(500).max(100_000).default(10_000),
     })
     .default({}),
   modules: z

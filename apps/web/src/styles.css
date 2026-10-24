@@ -73,7 +73,85 @@ body {
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 1rem;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.nav-group-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  padding: 0 0.75rem;
+  margin-bottom: 0.15rem;
+}
+
+.subnav-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0 0 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.subnav-tab {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.subnav-tab.active {
+  color: var(--text);
+  border-color: var(--accent-dim);
+  background: rgba(110, 231, 183, 0.08);
+}
+
+.voice-panel .voice-settings-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.voice-panel .panel-head {
+  margin-bottom: 0;
+}
+
+.service-status-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+}
+
+.service-status-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.discord-save-btn {
+  margin-top: 1rem;
+}
+
+.checkbox-row.align-end {
+  align-self: end;
+  padding-bottom: 0.35rem;
 }
 
 .nav-item {
@@ -201,6 +279,15 @@ body {
   margin-top: 0.75rem;
 }
 
+.memory-batch-replace {
+  margin-bottom: 1rem;
+}
+
+.memory-list-meta {
+  margin: 0.5rem 0 0.75rem;
+  font-size: 0.9rem;
+}
+
 .memory-transfer {
   margin-bottom: 1rem;
   padding: 0.75rem 1rem;
@@ -242,12 +329,20 @@ body {
 
 .memory-select {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
   text-align: left;
   border: none;
   background: transparent;
   color: var(--text);
   cursor: pointer;
   padding: 0.35rem;
+}
+
+.memory-timestamps {
+  font-size: 0.85rem;
+  margin: 0 0 0.75rem;
 }
 
 .memory-content {
@@ -503,15 +598,146 @@ body {
 
 .event-list li {
   display: grid;
-  grid-template-columns: 5rem 10rem 1fr;
-  gap: 0.75rem;
+  grid-template-columns: 5rem 9rem 7rem 1fr;
+  gap: 0.5rem 0.75rem;
   padding: 0.5rem 0;
   border-bottom: 1px solid var(--border);
   font-size: 0.88rem;
+  border-left: 3px solid transparent;
+  padding-left: 0.35rem;
+}
+
+.event-list li.event-severity-error {
+  border-left-color: var(--danger);
+}
+
+.event-list li.event-severity-warn {
+  border-left-color: var(--warn);
 }
 
 .event-type {
   color: var(--accent-dim);
+}
+
+.event-module {
+  color: var(--muted);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.event-summary {
+  word-break: break-word;
+}
+
+.events-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.events-toolbar .events-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: flex-end;
+  margin-bottom: 0.75rem;
+}
+
+.events-toolbar .events-toolbar-row:last-of-type {
+  margin-bottom: 0;
+}
+
+.field-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+}
+
+.field-inline.grow {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.field-inline input,
+.field-inline select {
+  min-width: 8rem;
+}
+
+.checkbox-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  padding-bottom: 0.35rem;
+}
+
+.events-meta {
+  margin: 0.75rem 0 0;
+  font-size: 0.82rem;
+}
+
+.events-table-wrap {
+  padding: 0;
+  overflow: auto;
+  max-height: min(70vh, 720px);
+}
+
+.events-table li {
+  grid-template-columns: 9rem 10rem 7rem 1fr;
+}
+
+.events-empty {
+  display: block;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.events-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.events-filter-group {
+  margin-bottom: 0.75rem;
+}
+
+.events-filter-label {
+  display: block;
+  font-size: 0.82rem;
+  margin-bottom: 0.35rem;
+}
+
+.events-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  align-items: center;
+}
+
+.events-type-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  max-height: 7rem;
+  overflow: auto;
+  padding: 0.35rem 0;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.btn-link:hover {
+  color: var(--text);
 }
 
 .banner {

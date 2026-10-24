@@ -1,3 +1,22 @@
+export type AppView =
+  | "overview"
+  | "chat"
+  | "events"
+  | "llm"
+  | "characters"
+  | "memory"
+  | "voice"
+  | "discord"
+  | "modules";
+
+export type SystemEvent = {
+  id: string;
+  timestamp: string;
+  type: string;
+  summary: string;
+  moduleId?: string;
+};
+
 export type ModuleRecord = {
   moduleId: string;
   name: string;
@@ -57,6 +76,18 @@ export type SystemSnapshot = {
     moduleAvailable: boolean;
     moduleId: string | null;
     enabled: boolean;
+  };
+  stt?: {
+    moduleAvailable: boolean;
+    moduleId: string | null;
+  };
+  tts?: {
+    moduleAvailable: boolean;
+    moduleId: string | null;
+  };
+  timekeeping?: {
+    moduleAvailable: boolean;
+    moduleId: string | null;
   };
   recentEvents: {
     id: string;

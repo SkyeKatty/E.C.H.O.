@@ -13,11 +13,19 @@
     "dev:memory:embed": "cd modules/memory && pip install -e \".[embeddings]\" && python -m memory_module",
     "dev:discord": "pnpm --filter @echo/module-discord dev",
     "dev:time": "pnpm --filter @echo/module-timekeeping dev",
+    "dev:tts": "pnpm --filter @echo/module-tts dev",
+    "dev:stt": "pnpm --filter @echo/module-stt dev",
+    "install:server:whisper": "cd servers/whisper && python -m pip install -e \".[runtime]\"",
+    "install:server:fish": "cd servers/fish && python -m pip install -e \".[runtime]\" && python -m echo_fish_speech_server.deps",
+    "install:memory": "cd modules/memory && python -m pip install -e \".[embeddings]\"",
+    "setup": "pnpm install && pnpm install:server:whisper && pnpm install:server:fish && pnpm install:memory",
+    "dev:server:whisper": "cd servers/whisper && python -m pip install -e \".[runtime]\" && python -m echo_whisper_server",
+    "dev:server:fish": "cd servers/fish && python -m pip install -e \".[runtime]\" && python -m echo_fish_speech_server",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12.0"
   },
   "packageManager": "pnpm@9.15.0"
 }

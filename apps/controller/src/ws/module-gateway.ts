@@ -10,12 +10,14 @@ import {
   responsePayloadSchema,
   streamChunkPayloadSchema,
   streamEndPayloadSchema,
+  eventPublishPayloadSchema,
   safeParseEnvelope,
   type Envelope,
 } from "@echo/protocol";
 import type { FastifyBaseLogger } from "fastify";
 import type { ModuleRegistry } from "../registry/module-registry.js";
 import type { EventLog } from "../persona/state.js";
+import { formatAbortReason } from "../util/operational-error.js";
 import { LLM_SETTINGS_GET } from "../llm/constants.js";
 
 type SocketMeta = {
@@ -30,6 +32,7 @@ type PendingModuleRequest = {
   timer: ReturnType<typeof setTimeout>;
   onChunk?: (chunk: unknown) => void;
   moduleId?: string;
+  capabilityId?: string;
   requestMessageId?: string;
 };
 
@@ -134,12 +137,30 @@ export class ModuleGateway {
           this.finishStreamEnd(envelope.correlationId, envelope);
         }
         break;
+      case MESSAGE_TYPES.EVENT_PUBLISH:
+        this.handleEventPublish(meta, envelope);
+        break;
       default:
         if (!meta.registered) {
           this.sendError(socket, "NOT_REGISTERED", "Module must register first");
           return;
         }
         this.log.debug({ type: envelope.type, source: envelope.source }, "Unhandled module message");
+    }
+  }
+
+  /** Close older WebSockets for the same moduleId (parallel dev starts, tsx watch, reconnect races). */
+  private supersedeModuleSockets(moduleId: string, keepSocket: WebSocket): void {
+    for (const [existingSocket, existingMeta] of this.sockets) {
+      if (existingSocket === keepSocket) continue;
+      if (existingMeta.moduleId !== moduleId || !existingMeta.registered) continue;
+      existingMeta.registered = false;
+      existingMeta.moduleId = undefined;
+      try {
+        existingSocket.close(1000, "superseded by new connection");
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -191,6 +212,8 @@ export class ModuleGateway {
       socket.close(1008, "auth failed");
       return;
     }
+
+    this.supersedeModuleSockets(reg.moduleId, socket);
 
     meta.moduleId = reg.moduleId;
     meta.registered = true;
@@ -252,7 +275,10 @@ export class ModuleGateway {
   private onClose(socket: WebSocket): void {
     const meta = this.sockets.get(socket);
     if (!meta) return;
-    const disconnected = this.registry.disconnectBySocket(meta.socketId);
+    const disconnected =
+      meta.registered && meta.moduleId
+        ? this.registry.disconnectBySocket(meta.socketId)
+        : null;
     if (disconnected) {
       this.eventLog.append({
         type: "module.disconnected",
@@ -262,9 +288,9 @@ export class ModuleGateway {
       if (ModuleGateway.moduleProvidesLlm(disconnected.capabilities)) {
         this.onLlmModuleAvailabilityChange?.();
       }
+      this.onRegistryChange();
     }
     this.sockets.delete(socket);
-    this.onRegistryChange();
   }
 
   async invokeCapability(
@@ -310,14 +336,19 @@ export class ModuleGateway {
 
         const timer = setTimeout(() => {
           this.pendingRequests.delete(request.messageId);
-          reject(new Error(`Module request timed out after ${timeoutMs}ms`));
+          const msg = `Module request timed out after ${timeoutMs}ms (cap=${capabilityId}, module=${owner.moduleId}, msg=${request.messageId.slice(0, 8)})`;
+          this.eventLog.append({ type: "module.timeout", summary: msg });
+          reject(new Error(msg));
         }, timeoutMs);
 
         const onAbort = () => {
           clearTimeout(timer);
           this.pendingRequests.delete(request.messageId);
           this.sendCancelToModule(owner.moduleId, request.messageId, options?.taskId);
-          reject(new DOMException("Aborted", "AbortError"));
+          const reason = formatAbortReason(options?.signal?.reason);
+          const msg = `Module request aborted (cap=${capabilityId}, module=${owner.moduleId}): ${reason}`;
+          this.eventLog.append({ type: "module.abort", summary: msg });
+          reject(new Error(msg));
         };
         options?.signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -335,6 +366,7 @@ export class ModuleGateway {
           timer,
           onChunk: options?.onChunk,
           moduleId: owner.moduleId,
+          capabilityId,
           requestMessageId: request.messageId,
         });
 
@@ -358,6 +390,26 @@ export class ModuleGateway {
     pending.onChunk(parsed.data.chunk);
   }
 
+  private handleEventPublish(meta: SocketMeta, envelope: Envelope): void {
+    if (!meta.registered) return;
+    const parsed = eventPublishPayloadSchema.safeParse(envelope.payload);
+    if (!parsed.success) return;
+    const data = parsed.data.data;
+    let summary: string;
+    if (typeof data === "object" && data !== null && "summary" in data) {
+      summary = String((data as { summary: unknown }).summary);
+    } else if (typeof data === "string") {
+      summary = data;
+    } else {
+      summary = JSON.stringify(data).slice(0, 400);
+    }
+    this.eventLog.append({
+      type: parsed.data.eventType,
+      summary,
+      moduleId: envelope.source,
+    });
+  }
+
   private finishStreamEnd(correlationId: string, envelope: Envelope): void {
     const pending = this.pendingRequests.get(correlationId);
     if (!pending) return;
@@ -370,6 +422,7 @@ export class ModuleGateway {
       return;
     }
     if (parsed.data.error) {
+      this.logModuleHandlerError(pending, parsed.data.error.message, parsed.data.capabilityId);
       pending.reject(new Error(parsed.data.error.message));
       return;
     }
@@ -400,15 +453,34 @@ export class ModuleGateway {
       return;
     }
     if (parsed.data.error) {
+      this.logModuleHandlerError(pending, parsed.data.error.message, parsed.data.capabilityId);
       pending.reject(new Error(parsed.data.error.message));
       return;
     }
     pending.resolve(parsed.data.result);
   }
 
+  private logModuleHandlerError(
+    pending: PendingModuleRequest,
+    message: string,
+    capabilityId?: string,
+  ): void {
+    const cap = capabilityId ?? pending.capabilityId ?? "unknown";
+    const summary = `Module ${pending.moduleId ?? "?"} → ${cap}: ${message}`;
+    this.eventLog.append({
+      type: "module.error",
+      summary,
+      moduleId: pending.moduleId,
+    });
+    this.log.warn({ capabilityId: cap, moduleId: pending.moduleId }, summary);
+  }
+
   sendToModule(moduleId: string, envelope: Envelope): boolean {
+    const activeSocketId = this.registry.getActiveSocketId(moduleId);
+    if (!activeSocketId) return false;
+
     for (const [socket, meta] of this.sockets) {
-      if (meta.moduleId === moduleId && meta.registered && socket.readyState === 1) {
+      if (meta.socketId === activeSocketId && meta.registered && socket.readyState === 1) {
         socket.send(JSON.stringify(envelope));
         return true;
       }

@@ -17,13 +17,15 @@ export type GateResult = {
   reason: string;
 };
 
-const SYSTEM = `You decide whether a persona would speak up in a Discord text channel given ONE new message.
+function buildGateSystem(characterName: string): string {
+  return `You decide whether ${characterName} would speak up in a Discord text channel given ONE new message.
 Return ONLY JSON: {"shouldRespond":boolean,"reason":"short phrase"}
 
-Respond true when the persona would naturally join now (direct question, strong relevance, emotional moment, or they're being addressed).
-Respond false when they would stay silent for this new message (side chatter, not their business, already said enough).
+Respond true when ${characterName} would naturally join now (direct question, strong relevance, emotional moment, or she's being addressed).
+Respond false when ${characterName} would stay silent for this new message (side chatter, not her business, already said enough).
 
 Prior channel lines may be included in order before the new message — base the decision on the NEW message.`;
+}
 
 export async function evaluateDiscordRelevance(
   llm: LlmBackend,
@@ -44,10 +46,10 @@ export async function evaluateDiscordRelevance(
     const card = input.character;
     const result = await provider.complete({
       messages: [
-        { role: "system", content: SYSTEM },
+        { role: "system", content: buildGateSystem(card.name) },
         {
           role: "user",
-          content: `Persona: ${card.name}
+          content: `Character: ${card.name}
 Personality notes: ${card.personality?.slice(0, 800) ?? "(none)"}
 Channel: ${input.channelLabel}
 

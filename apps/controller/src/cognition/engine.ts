@@ -13,10 +13,18 @@ import type { MemoryModuleService } from "../memory/memory-module-service.js";
 import type { MemoryCurator } from "../memory/memory-curator.js";
 import type { EpisodeCompactor } from "../memory/episode-compactor.js";
 import type { ParticipantRef } from "../memory/participant.js";
+import type { TtsModuleService } from "../tts/tts-module-service.js";
+import { SpeechStreamPipeline } from "../tts/speech-pipeline.js";
+import { resolveSpeechOutputPlan, type TtsSink } from "../tts/speech-origin.js";
 import { formatAssistantTurnMessages, formatLlmOutput } from "../llm/output-format.js";
 import { DISCORD_CAPABILITIES } from "@echo/discord-contract";
 import { TIME_CAPABILITIES } from "@echo/time-contract";
+import { applyDiscordSessionToolDefaults } from "../discord/discord-tool-defaults.js";
+import { describeOperationalError } from "../util/operational-error.js";
+import { buildDiscordChannelPrompt } from "../discord/discord-session-prompt.js";
+import { discordSessionToolExclusions } from "../discord/discord-tool-policy.js";
 import { getDiscordDeliveryForSession } from "../discord/session-delivery.js";
+import { expandPersonaPlaceholders, normalizeMemoryProse } from "../persona/placeholders.js";
 
 export type CognitiveEngineConfig = {
   maxToolIterations: number;
@@ -47,6 +55,7 @@ export class CognitiveEngine {
     private readonly memory: MemoryModuleService | null = null,
     private readonly memoryCurator: MemoryCurator | null = null,
     private readonly episodeCompactor: EpisodeCompactor | null = null,
+    private readonly tts: TtsModuleService | null = null,
   ) {}
 
   isChatAvailable(): boolean {
@@ -99,11 +108,15 @@ export class CognitiveEngine {
     };
   }
 
-  cancelTask(taskId: string): boolean {
+  cancelTask(taskId: string, reason = "cancelTask called"): boolean {
     const controller = this.activeTasks.get(taskId);
     if (!controller) return false;
-    controller.abort();
+    controller.abort(new DOMException(reason, "AbortError"));
     this.activeTasks.delete(taskId);
+    this.eventLog.append({
+      type: "cognition.abort",
+      summary: `Chat task ${taskId.slice(0, 8)}… cancelled: ${reason}`,
+    });
     return true;
   }
 
@@ -113,6 +126,13 @@ export class CognitiveEngine {
     taskId?: string;
     speaker?: ParticipantRef;
     stream?: boolean;
+    /** When set (or inferred from twitch:/stt: speakers), LLM streams sentences to the TTS module. */
+    speechOutput?: {
+      force?: boolean;
+      disable?: boolean;
+      sink?: TtsSink;
+      streamId?: string;
+    };
     providerId?: string;
     generation?: { temperature?: number; maxTokens?: number };
     onStream?: (chunk: string) => void;
@@ -165,14 +185,19 @@ export class CognitiveEngine {
       pendingActions: this.activeTasks.size,
     });
 
-    const { tools, toolNameToCapabilityId } = buildToolRouting(
-      this.moduleRegistry.snapshot().modules.flatMap((m) => m.capabilities),
-    );
-
     const character = this.characters.getActive();
     if (!character) {
       throw new Error("No active character card. Create or activate a character in the dashboard.");
     }
+
+    const discordDelivery = getDiscordDeliveryForSession(session.id);
+    const discordToolExclusions = discordDelivery
+      ? discordSessionToolExclusions(discordDelivery.mode)
+      : undefined;
+    const { tools, toolNameToCapabilityId } = buildToolRouting(
+      this.moduleRegistry.snapshot().modules.flatMap((m) => m.capabilities),
+      discordToolExclusions ? { excludeCapabilityIds: discordToolExclusions } : undefined,
+    );
 
     const memoryAvailable = this.memory?.isAvailable() ?? false;
     if (memoryAvailable && this.sessions.isEmpty(session.id)) {
@@ -211,12 +236,16 @@ export class CognitiveEngine {
         const retrieved = await this.memory!.retrieveContext({
           personaId: character.id,
           sessionId: session.id,
+          characterDisplayName: character.name,
           speaker: input.speaker,
           query: input.message,
           tokenBudget: this.config.memoryRetrievalTokenBudget ?? 2048,
           maxItems: this.config.memoryRetrievalMaxItems ?? 12,
         });
-        memoryInjection = retrieved.injectedText;
+        memoryInjection = normalizeMemoryProse(
+          expandPersonaPlaceholders(retrieved.injectedText, { characterName: character.name }),
+          character.name,
+        );
         if (retrieved.truncated) {
           this.eventLog.append({
             type: "memory.retrieve",
@@ -231,6 +260,9 @@ export class CognitiveEngine {
       }
     }
 
+    const discordInjection = discordDelivery ? buildDiscordChannelPrompt(discordDelivery) : "";
+    const combinedInjection = [memoryInjection, discordInjection].filter(Boolean).join("\n\n");
+
     const messages = assembleChatMessages({
       character,
       policy: this.runtimePolicy,
@@ -239,7 +271,7 @@ export class CognitiveEngine {
       userMessage: input.speaker
         ? `[${input.speaker.displayName}] ${input.message}`
         : input.message,
-      memoryInjection,
+      memoryInjection: combinedInjection || undefined,
       historyLimit: memoryAvailable ? this.config.promptHistoryMessages ?? 24 : undefined,
     });
 
@@ -248,10 +280,25 @@ export class CognitiveEngine {
       summary: `User message (${input.message.slice(0, 80)}${input.message.length > 80 ? "…" : ""})`,
     });
 
+    const ttsDisabledForDiscordText = discordDelivery?.mode === "text";
+    const speechPlan = this.tts?.isAvailable()
+      ? resolveSpeechOutputPlan({
+          speaker: input.speaker,
+          streamId: input.speechOutput?.streamId ?? taskId,
+          sink: input.speechOutput?.sink,
+          force: input.speechOutput?.force,
+          disable: input.speechOutput?.disable ?? ttsDisabledForDiscordText,
+        })
+      : null;
+
+    const speechPipeline =
+      speechPlan && this.tts ? new SpeechStreamPipeline(this.tts, speechPlan) : null;
+    const llmStream = speechPipeline ? true : (input.stream ?? true);
+
     try {
       const result = await runCognitiveLoop({
         messages,
-        stream: input.stream ?? true,
+        stream: llmStream,
         signal: abort.signal,
         onStream: (ev) => {
           if (ev.type === "text-delta") input.onStream?.(formatLlmOutput(ev.delta));
@@ -261,9 +308,37 @@ export class CognitiveEngine {
           tools,
           maxIterations: this.config.maxToolIterations,
           requestTimeoutMs: this.config.requestTimeoutMs,
+          onEvent: (ev) => {
+            input.onTrace?.(ev);
+            if (ev.type === "model.delta" && speechPipeline) {
+              void speechPipeline.onDelta(ev.delta);
+            }
+            if (ev.type === "tool.start") {
+              this.eventLog.append({
+                type: "tool.start",
+                summary: `${ev.name} → ${ev.capabilityId}`,
+              });
+            }
+            if (ev.type === "tool.error" || ev.type === "loop.error") {
+              this.eventLog.append({
+                type: "cognition.warn",
+                summary: ev.detail,
+              });
+            }
+            if (ev.type === "tool.end" && !ev.ok) {
+              this.eventLog.append({
+                type: "tool.error",
+                summary: `${ev.name} → ${ev.capabilityId} failed`,
+              });
+            }
+          },
           resolveCapabilityId: (toolName) => toolNameToCapabilityId.get(toolName) ?? toolName,
           invokeModule: async (capabilityId, params, opts) => {
             let payload = params;
+            const discordSession = getDiscordDeliveryForSession(session.id);
+            if (discordSession) {
+              payload = applyDiscordSessionToolDefaults(capabilityId, payload, discordSession);
+            }
             if (capabilityId === TIME_CAPABILITIES.TIMER_CREATE) {
               const base =
                 typeof params === "object" && params !== null
@@ -309,12 +384,18 @@ export class CognitiveEngine {
               delete base.mentionUsernames;
               payload = base;
             }
+            const voiceCap = capabilityId.startsWith("discord.voice.");
+            const timeoutMs =
+              capabilityId === DISCORD_CAPABILITIES.VOICE_JOIN
+                ? Math.max(this.config.moduleRequestTimeoutMs, 90_000)
+                : this.config.moduleRequestTimeoutMs;
             return this.moduleGateway.invokeCapability(capabilityId, payload, {
-              signal: opts?.signal,
-              timeoutMs: this.config.moduleRequestTimeoutMs,
+              // Voice join can take 20s+; do not tie to chat abort (avoids spurious "operation was aborted").
+              signal: voiceCap ? undefined : opts?.signal,
+              timeoutMs,
+              taskId,
             });
           },
-          onEvent: input.onTrace,
         },
       });
 
@@ -343,6 +424,7 @@ export class CognitiveEngine {
 
         this.memoryCurator?.processTurn({
           personaId: character.id,
+          characterName: character.name,
           sessionId: session.id,
           turnId: taskId,
           speaker: input.speaker,
@@ -352,6 +434,7 @@ export class CognitiveEngine {
 
         this.episodeCompactor?.afterTurn({
           personaId: character.id,
+          characterName: character.name,
           sessionId: session.id,
           turnId: taskId,
         });
@@ -385,14 +468,24 @@ export class CognitiveEngine {
         usage: result.usage,
       };
     } catch (err) {
+      const { logLine } = describeOperationalError(err, {
+        operation: "chat",
+        taskId,
+        sessionId: session.id,
+        timeoutMs: this.config.requestTimeoutMs,
+      });
+      this.eventLog.append({ type: "cognition.error", summary: logLine });
       this.setPersonaState({
         activity: "idle",
         focus: "conversation",
         pendingActions: Math.max(0, this.activeTasks.size - 1),
-        lastEventSummary: err instanceof Error ? err.message : "Chat failed",
+        lastEventSummary: logLine.slice(0, 200),
       });
-      throw err;
+      throw err instanceof Error ? err : new Error(logLine);
     } finally {
+      if (speechPipeline) {
+        await speechPipeline.flush().catch(() => {});
+      }
       this.activeTasks.delete(taskId);
     }
   }

@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import { SubNavTabs } from "./SubNavTabs";
+
+type DiscordTab = "connection" | "text" | "voice";
 
 type ChannelPolicy = {
   channelId: string;
@@ -37,6 +40,7 @@ const DEFAULT: DiscordSettings = {
 };
 
 export function DiscordPanel(props: { moduleAvailable: boolean }) {
+  const [tab, setTab] = useState<DiscordTab>("connection");
   const [settings, setSettings] = useState<DiscordSettings>(DEFAULT);
   const [botToken, setBotToken] = useState("");
   const [newChannelId, setNewChannelId] = useState("");
@@ -52,9 +56,12 @@ export function DiscordPanel(props: { moduleAvailable: boolean }) {
     try {
       const res = await fetch("/api/v1/discord/settings");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as { settings: DiscordSettings };
+      const body = (await res.json()) as {
+        settings: DiscordSettings;
+        moduleStatus?: Record<string, unknown> | null;
+      };
       setSettings({ ...DEFAULT, ...body.settings });
-      setModuleStatus((body.moduleStatus as Record<string, unknown>) ?? null);
+      setModuleStatus(body.moduleStatus ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
     } finally {
@@ -116,18 +123,6 @@ export function DiscordPanel(props: { moduleAvailable: boolean }) {
         </span>
       </div>
 
-      <p className="muted chat-hint">
-        Text messages are batched and gated by persona before calling the LLM. Voice joins configured channels;
-        STT/TTS modules will plug into the same pipeline (see docs/DISCORD.md).
-      </p>
-
-      <div className="banner discord-intent-hint">
-        <strong>Developer Portal:</strong> Bot → Privileged Gateway Intents → enable{" "}
-        <span className="mono">Message Content Intent</span> (needed to read normal channel chat). Save there first,
-        then save here. If you see &quot;Used disallowed intents&quot;, that intent is still off or mentions-only mode
-        is required.
-      </div>
-
       {error && <div className="banner banner-warn">{error}</div>}
       {saved && <div className="banner banner-ok">Settings saved. Gateway connect runs in the Discord module (may take a few seconds).</div>}
 
@@ -142,177 +137,202 @@ export function DiscordPanel(props: { moduleAvailable: boolean }) {
         </p>
       )}
 
-      <label className="checkbox-row">
-        <input
-          type="checkbox"
-          checked={settings.enabled}
-          onChange={(e) => setSettings((s) => ({ ...s, enabled: e.target.checked }))}
-        />
-        Enable Discord integration
-      </label>
-      <label className="checkbox-row">
-        <input
-          type="checkbox"
-          checked={settings.mentionsOnlyMode}
-          onChange={(e) => setSettings((s) => ({ ...s, mentionsOnlyMode: e.target.checked }))}
-        />
-        Mentions only mode (no Message Content intent — bot only sees @mentions and replies)
-      </label>
+      <SubNavTabs
+        tabs={[
+          { id: "connection", label: "Connection" },
+          { id: "text", label: "Text chat" },
+          { id: "voice", label: "Voice" },
+        ]}
+        active={tab}
+        onChange={setTab}
+      />
 
-      <div className="form-grid">
-        <label>
-          Bot token {settings.botTokenConfigured && !botToken ? "(configured)" : ""}
-          <input
-            type="password"
-            className="text-input"
-            placeholder={settings.botTokenConfigured ? "Leave blank to keep current token" : "Discord bot token"}
-            value={botToken}
-            onChange={(e) => setBotToken(e.target.value)}
-            autoComplete="off"
-          />
-        </label>
-        <label>
-          Guild ID
-          <input
-            className="text-input mono"
-            value={settings.guildId ?? ""}
-            onChange={(e) => setSettings((s) => ({ ...s, guildId: e.target.value || undefined }))}
-            placeholder="Snowflake guild id"
-          />
-        </label>
-      </div>
-
-      <h3>Channels</h3>
-      <p className="muted">Empty list = all channels in guild (not recommended). Add text/voice channel ids explicitly.</p>
-      <ul className="discord-channel-list">
-        {settings.channels.map((c) => (
-          <li key={c.channelId} className="discord-channel-row">
-            <span className="mono">{c.channelId}</span>
+      {tab === "connection" && (
+        <>
+          <div className="banner discord-intent-hint">
+            <strong>Developer Portal:</strong> Bot → Privileged Gateway Intents → enable{" "}
+            <span className="mono">Message Content Intent</span> for normal channel chat (or use mentions-only below).
+          </div>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={settings.enabled}
+              onChange={(e) => setSettings((s) => ({ ...s, enabled: e.target.checked }))}
+            />
+            Enable Discord integration
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={settings.mentionsOnlyMode}
+              onChange={(e) => setSettings((s) => ({ ...s, mentionsOnlyMode: e.target.checked }))}
+            />
+            Mentions only mode (no Message Content intent)
+          </label>
+          <div className="form-grid">
             <label>
+              Bot token {settings.botTokenConfigured && !botToken ? "(configured)" : ""}
               <input
-                type="checkbox"
-                checked={c.textEnabled}
-                onChange={(e) =>
-                  setSettings((s) => ({
-                    ...s,
-                    channels: s.channels.map((x) =>
-                      x.channelId === c.channelId ? { ...x, textEnabled: e.target.checked } : x,
-                    ),
-                  }))
-                }
+                type="password"
+                className="text-input"
+                placeholder={settings.botTokenConfigured ? "Leave blank to keep current token" : "Discord bot token"}
+                value={botToken}
+                onChange={(e) => setBotToken(e.target.value)}
+                autoComplete="off"
               />
-              text
             </label>
             <label>
+              Guild ID
               <input
-                type="checkbox"
-                checked={c.voiceEnabled}
-                onChange={(e) =>
-                  setSettings((s) => ({
-                    ...s,
-                    channels: s.channels.map((x) =>
-                      x.channelId === c.channelId ? { ...x, voiceEnabled: e.target.checked } : x,
-                    ),
-                  }))
-                }
+                className="text-input mono"
+                value={settings.guildId ?? ""}
+                onChange={(e) => setSettings((s) => ({ ...s, guildId: e.target.value || undefined }))}
+                placeholder="Snowflake guild id"
               />
-              voice
             </label>
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={() =>
-                setSettings((s) => ({
-                  ...s,
-                  channels: s.channels.filter((x) => x.channelId !== c.channelId),
-                }))
-              }
-            >
-              Remove
+          </div>
+          <h3>Channels</h3>
+          <p className="muted">Add channel snowflakes explicitly. Enable text and/or voice per channel.</p>
+          <ul className="discord-channel-list">
+            {settings.channels.map((c) => (
+              <li key={c.channelId} className="discord-channel-row">
+                <span className="mono">{c.channelId}</span>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={c.textEnabled}
+                    onChange={(e) =>
+                      setSettings((s) => ({
+                        ...s,
+                        channels: s.channels.map((x) =>
+                          x.channelId === c.channelId ? { ...x, textEnabled: e.target.checked } : x,
+                        ),
+                      }))
+                    }
+                  />
+                  text
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={c.voiceEnabled}
+                    onChange={(e) =>
+                      setSettings((s) => ({
+                        ...s,
+                        channels: s.channels.map((x) =>
+                          x.channelId === c.channelId ? { ...x, voiceEnabled: e.target.checked } : x,
+                        ),
+                      }))
+                    }
+                  />
+                  voice
+                </label>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() =>
+                    setSettings((s) => ({
+                      ...s,
+                      channels: s.channels.filter((x) => x.channelId !== c.channelId),
+                    }))
+                  }
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="speaker-row">
+            <input
+              className="text-input mono"
+              placeholder="Channel snowflake id"
+              value={newChannelId}
+              onChange={(e) => setNewChannelId(e.target.value)}
+            />
+            <button type="button" className="btn-secondary" onClick={addChannel}>
+              Add channel
             </button>
-          </li>
-        ))}
-      </ul>
-      <div className="speaker-row">
-        <input
-          className="text-input mono"
-          placeholder="Channel snowflake id"
-          value={newChannelId}
-          onChange={(e) => setNewChannelId(e.target.value)}
-        />
-        <button type="button" className="btn-secondary" onClick={addChannel}>
-          Add channel
-        </button>
-      </div>
+          </div>
+        </>
+      )}
 
-      <h3>Text behavior</h3>
-      <p className="muted">
-        Each message is gated individually. Context is one ordered transcript: up to three lines before the backlog,
-        every user message since the persona last replied, and her replies when they fall in that window (backlog cap
-        below).
-      </p>
-      <div className="form-grid">
-        <label>
-          Max backlog since last reply
-          <input
-            type="number"
-            className="text-input"
-            min={1}
-            max={50}
-            value={settings.batchMaxMessages}
-            onChange={(e) => setSettings((s) => ({ ...s, batchMaxMessages: Number(e.target.value) }))}
-          />
-        </label>
-      </div>
-      <label className="checkbox-row">
-        <input
-          type="checkbox"
-          checked={settings.relevanceGateEnabled}
-          onChange={(e) => setSettings((s) => ({ ...s, relevanceGateEnabled: e.target.checked }))}
-        />
-        Persona relevance gate (skip messages the character would ignore)
-      </label>
-      <label className="checkbox-row">
-        <input
-          type="checkbox"
-          checked={settings.alwaysRespondToMention}
-          onChange={(e) => setSettings((s) => ({ ...s, alwaysRespondToMention: e.target.checked }))}
-        />
-        Always respond when @mentioned or replied to
-      </label>
+      {tab === "text" && (
+        <>
+          <p className="muted chat-hint">
+            Messages are batched and gated by persona before the LLM runs. @mentions and replies to the bot always get a
+            response when enabled below.
+          </p>
+          <div className="form-grid">
+            <label>
+              Max backlog since last reply
+              <input
+                type="number"
+                className="text-input"
+                min={1}
+                max={50}
+                value={settings.batchMaxMessages}
+                onChange={(e) => setSettings((s) => ({ ...s, batchMaxMessages: Number(e.target.value) }))}
+              />
+            </label>
+          </div>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={settings.relevanceGateEnabled}
+              onChange={(e) => setSettings((s) => ({ ...s, relevanceGateEnabled: e.target.checked }))}
+            />
+            Persona relevance gate
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={settings.alwaysRespondToMention}
+              onChange={(e) => setSettings((s) => ({ ...s, alwaysRespondToMention: e.target.checked }))}
+            />
+            Always respond when @mentioned or replied to
+          </label>
+        </>
+      )}
 
-      <h3>Voice</h3>
-      <label className="checkbox-row">
-        <input
-          type="checkbox"
-          checked={settings.autoJoinVoice}
-          onChange={(e) => setSettings((s) => ({ ...s, autoJoinVoice: e.target.checked }))}
-        />
-        Auto-join voice when someone enters a voice-enabled channel
-      </label>
-      <label className="checkbox-row">
-        <input
-          type="checkbox"
-          checked={settings.voiceBargeInEnabled}
-          onChange={(e) => setSettings((s) => ({ ...s, voiceBargeInEnabled: e.target.checked }))}
-        />
-        Stop speaking when a human talks (never talk over people)
-      </label>
-      <label>
-        Interrupt annoyance threshold
-        <input
-          type="number"
-          className="text-input"
-          min={1}
-          max={20}
-          value={settings.voiceInterruptAnnoyanceThreshold}
-          onChange={(e) =>
-            setSettings((s) => ({ ...s, voiceInterruptAnnoyanceThreshold: Number(e.target.value) }))
-          }
-        />
-      </label>
+      {tab === "voice" && (
+        <>
+          <p className="muted chat-hint">
+            Voice capture uses the <strong>Voice</strong> page (STT/TTS modules). Mark channels as voice-enabled under
+            Connection, then run <span className="mono">pnpm dev:stt</span> and <span className="mono">pnpm dev:tts</span>.
+          </p>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={settings.autoJoinVoice}
+              onChange={(e) => setSettings((s) => ({ ...s, autoJoinVoice: e.target.checked }))}
+            />
+            Auto-join when someone enters a voice-enabled channel
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={settings.voiceBargeInEnabled}
+              onChange={(e) => setSettings((s) => ({ ...s, voiceBargeInEnabled: e.target.checked }))}
+            />
+            Stop TTS when a human talks (barge-in)
+          </label>
+          <label>
+            Interrupt annoyance threshold
+            <input
+              type="number"
+              className="text-input"
+              min={1}
+              max={20}
+              value={settings.voiceInterruptAnnoyanceThreshold}
+              onChange={(e) =>
+                setSettings((s) => ({ ...s, voiceInterruptAnnoyanceThreshold: Number(e.target.value) }))
+              }
+            />
+          </label>
+        </>
+      )}
 
-      <button type="button" className="btn-primary" disabled={saving} onClick={() => void save()}>
+      <button type="button" className="btn-primary discord-save-btn" disabled={saving} onClick={() => void save()}>
         {saving ? "Saving…" : "Save Discord settings"}
       </button>
     </section>

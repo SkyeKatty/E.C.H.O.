@@ -11,6 +11,13 @@ import {
 } from "@echo/protocol";
 import type { ModuleClientOptions, ModuleLogger, ModuleRequestContext, RequestHandler } from "./types.js";
 
+function formatModuleAbortReason(reason: unknown, fallback: string): string {
+  if (reason instanceof DOMException && reason.message) return reason.message;
+  if (typeof reason === "string" && reason.trim()) return reason;
+  if (fallback.toLowerCase().includes("abort")) return fallback;
+  return fallback || "operation was aborted";
+}
+
 const defaultLogger: ModuleLogger = {
   info: (o, m) => console.log(m ?? "info", o),
   warn: (o, m) => console.warn(m ?? "warn", o),
@@ -25,6 +32,7 @@ export class ModuleClient {
   private heartbeatSequence = 0;
   private reconnectAttempt = 0;
   private closedIntentionally = false;
+  private superseded = false;
   private registered = false;
   private connecting = false;
   private readonly registrationWaiters: Array<() => void> = [];
@@ -80,6 +88,26 @@ export class ModuleClient {
     this.ws.send(JSON.stringify(envelope));
   }
 
+  /** Publish a dashboard-visible event (Overview → recent events). */
+  publishEvent(
+    eventType: string,
+    data: { summary: string; [key: string]: unknown },
+    priority: "immediate" | "interrupt" | "background" | "low" = "background",
+  ): void {
+    if (!this.registered) return;
+    try {
+      const envelope = createEnvelope({
+        type: MESSAGE_TYPES.EVENT_PUBLISH,
+        source: this.options.registration.moduleId,
+        destination: "controller",
+        payload: { eventType, priority, data },
+      });
+      this.send(envelope);
+    } catch (err) {
+      this.log.warn({ err, eventType }, "Failed to publish module event");
+    }
+  }
+
   private log: ModuleLogger = defaultLogger;
 
   private ensureConnection(): void {
@@ -110,13 +138,16 @@ export class ModuleClient {
       }
     });
 
-    ws.on("close", () => {
+    ws.on("close", (code, reason) => {
       this.clearHeartbeat();
       this.connecting = false;
       this.ws = null;
       this.registered = false;
+      if (code === 1000 && reason.toString().includes("superseded")) {
+        this.superseded = true;
+      }
       this.options.onDisconnected?.();
-      if (!this.closedIntentionally) {
+      if (!this.closedIntentionally && !this.superseded) {
         this.scheduleReconnect();
       }
     });
@@ -182,7 +213,15 @@ export class ModuleClient {
       case MESSAGE_TYPES.CANCEL: {
         const correlationId = envelope.correlationId;
         if (correlationId) {
-          this.activeRequests.get(correlationId)?.abort();
+          const ctrl = this.activeRequests.get(correlationId);
+          const reason =
+            typeof envelope.payload === "object" &&
+            envelope.payload !== null &&
+            "reason" in envelope.payload
+              ? String((envelope.payload as { reason?: string }).reason ?? "cancel")
+              : "cancel";
+          this.log.warn({ correlationId, reason }, "Controller cancelled in-flight request");
+          ctrl?.abort(new DOMException(`Controller cancelled request (${reason})`, "AbortError"));
         }
         break;
       }
@@ -222,18 +261,40 @@ export class ModuleClient {
       },
     };
 
+    const started = Date.now();
     try {
+      this.log.info({ capabilityId, messageId: envelope.messageId }, "Capability request started");
       const result = await handler(envelope, params ?? parsed.data.params, context);
       if (streamed) {
         this.sendStreamEnd(envelope, { capabilityId, result });
       } else {
         this.sendResponse(envelope, { capabilityId, result });
       }
+      this.log.info(
+        { capabilityId, ms: Date.now() - started },
+        "Capability request completed",
+      );
     } catch (err) {
+      const aborted = abort.signal.aborted;
       const message = err instanceof Error ? err.message : "Handler failed";
+      const abortReason = abort.signal.reason;
+      const summary = aborted
+        ? `${capabilityId} cancelled: ${formatModuleAbortReason(abortReason, message)}`
+        : `${capabilityId} failed: ${message}`;
+      this.log.error({ capabilityId, err, aborted, ms: Date.now() - started }, summary);
+      // Controller EventLog records module.error from the gateway response — avoid duplicate rows.
+      if (aborted) {
+        this.publishEvent("module.cancelled", {
+          summary,
+          capabilityId,
+          message,
+          aborted,
+        });
+      }
+      const code = aborted ? "ABORTED" : "HANDLER_ERROR";
       const payload = {
         capabilityId,
-        error: { code: "HANDLER_ERROR", message },
+        error: { code, message: summary },
       };
       if (streamed) {
         this.sendStreamEnd(envelope, payload);

@@ -152,6 +152,13 @@ export class ModuleRegistry {
     return m ? this.toPublic(m) : undefined;
   }
 
+  /** WebSocket session id for the active connection to this module (if any). */
+  getActiveSocketId(moduleId: string): string | null {
+    const m = this.modules.get(moduleId);
+    if (!m || m.connectionState === "disconnected") return null;
+    return m.socketId;
+  }
+
   snapshot(): ModuleRegistrySnapshot {
     return {
       modules: [...this.modules.values()].map((m) => this.toPublic(m)),

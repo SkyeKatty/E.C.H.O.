@@ -1,0 +1,9 @@
+{
+  "extends": "../../packages/llm/tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "noEmit": false
+  },
+  "include": ["src/**/*.ts"]
+}
